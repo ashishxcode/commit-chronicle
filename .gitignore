@@ -1,0 +1,19 @@
+# Generated reports
+*.md
+!README.md
+
+# Temporary files
+temp_*
+monthly_data_*/
+
+# macOS
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
