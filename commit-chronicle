@@ -194,7 +194,7 @@ echo "----------------------------------------"
 get_downloads_dir() {
     case "$OS_TYPE" in
         "windows")
-            # Windows: Use USERPROFILE/Downloads or fallback to current directory
+            # Windows: Use USERPROFILE/Downloads
             if [ -n "$USERPROFILE" ]; then
                 echo "$USERPROFILE/Downloads"
             else
@@ -208,9 +208,37 @@ get_downloads_dir() {
     esac
 }
 
+# Sanitize filename components
+sanitize_filename() {
+    local input="$1"
+    # Remove/replace invalid characters: < > : " | ? * \ / and control chars
+    echo "$input" | sed 's/[<>:"|?*\\\/[:cntrl:]]\+/_/g' | sed 's/__*/_/g' | sed 's/^_\|_$//g'
+}
+
 DOWNLOADS_DIR=$(get_downloads_dir)
-mkdir -p "$DOWNLOADS_DIR" 2>/dev/null || DOWNLOADS_DIR="."
-REPORT_FILE="$DOWNLOADS_DIR/${MONTH_NAME}_${YEAR}_${GITHUB_USERNAME}_report.md"
+# Test write permission and create directory with fallback
+if ! mkdir -p "$DOWNLOADS_DIR" 2>/dev/null; then
+    echo "⚠️  Cannot create Downloads directory, using current directory"
+    DOWNLOADS_DIR="."
+elif ! touch "$DOWNLOADS_DIR/.test_write" 2>/dev/null; then
+    echo "⚠️  No write permission to Downloads directory, using current directory"
+    DOWNLOADS_DIR="."
+else
+    rm -f "$DOWNLOADS_DIR/.test_write" 2>/dev/null
+fi
+
+# Sanitize filename components and create report path
+CLEAN_MONTH=$(sanitize_filename "$MONTH_NAME")
+CLEAN_YEAR=$(sanitize_filename "$YEAR")
+CLEAN_USERNAME=$(sanitize_filename "$GITHUB_USERNAME")
+REPORT_FILENAME="${CLEAN_MONTH}_${CLEAN_YEAR}_${CLEAN_USERNAME}_report.md"
+
+# Handle existing file with backup
+REPORT_FILE="$DOWNLOADS_DIR/$REPORT_FILENAME"
+if [ -f "$REPORT_FILE" ]; then
+    BACKUP_FILE="$REPORT_FILE.backup.$(date +%s)"
+    cp "$REPORT_FILE" "$BACKUP_FILE" 2>/dev/null && echo "📋 Existing report backed up to: $BACKUP_FILE"
+fi
 
 # Start building the markdown report
 cat > "$REPORT_FILE" << EOF
