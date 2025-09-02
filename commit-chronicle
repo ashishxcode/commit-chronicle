@@ -190,8 +190,27 @@ for repo in "${REPO_PATHS[@]}"; do
 done
 echo "----------------------------------------"
 
-# Output markdown file
-REPORT_FILE="${MONTH_NAME}_${YEAR}_${GITHUB_USERNAME}_report.md"
+# Output markdown file - create in Downloads directory (cross-platform)
+get_downloads_dir() {
+    case "$OS_TYPE" in
+        "windows")
+            # Windows: Use USERPROFILE/Downloads or fallback to current directory
+            if [ -n "$USERPROFILE" ]; then
+                echo "$USERPROFILE/Downloads"
+            else
+                echo "."
+            fi
+            ;;
+        *)
+            # Linux/macOS: Use HOME/Downloads
+            echo "$HOME/Downloads"
+            ;;
+    esac
+}
+
+DOWNLOADS_DIR=$(get_downloads_dir)
+mkdir -p "$DOWNLOADS_DIR" 2>/dev/null || DOWNLOADS_DIR="."
+REPORT_FILE="$DOWNLOADS_DIR/${MONTH_NAME}_${YEAR}_${GITHUB_USERNAME}_report.md"
 
 # Start building the markdown report
 cat > "$REPORT_FILE" << EOF
