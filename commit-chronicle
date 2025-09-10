@@ -5,6 +5,14 @@
 # Uses only git and gh commands to generate markdown report
 # Optimized for zsh shell
 
+# Function to generate commit chronicle report
+commit_chronicle() {
+    # Save current directory to return to it later
+    local ORIGINAL_DIR="$PWD"
+    
+    # Trap to ensure we return to original directory on exit
+    trap 'cd "$ORIGINAL_DIR"' EXIT
+
 set -e
 
 # Enable zsh array compatibility
@@ -92,6 +100,57 @@ create_author_pattern() {
     # Build a regex pattern that matches common author variations
     # Include: exact name, email patterns with username, case variations
     echo "($author_name|${github_username}@|${github_username}.*@|.*${github_username}.*)"
+}
+
+
+# Parse branch references to extract clean branch names
+parse_branch_name() {
+    local branch_refs="$1"
+    # Extract the main branch name from git references like "origin/feature/ABC-123-description"
+    # Remove origin/, HEAD ->, and other git reference prefixes
+    echo "$branch_refs" | sed -E 's/.*(origin\/|HEAD -> )//g' | sed 's/,.*//g' | sed 's/^ *//g'
+}
+
+# Get the original branch name for a commit using git name-rev
+get_original_branch() {
+    local commit_hash="$1"
+    local repo_path="$2"
+    
+    # Try multiple methods to get the original branch
+    cd "$repo_path"
+    
+    # Method 1: Use git name-rev to find the branch tip this commit was part of
+    local branch_name=$(git name-rev --name-only --refs="refs/heads/*" "$commit_hash" 2>/dev/null | sed 's/~.*//g' | sed 's/\^.*//g')
+    
+    # Method 2: If that fails, try to find branches that contain this commit (excluding main/master)
+    if [ -z "$branch_name" ] || [ "$branch_name" = "main" ] || [ "$branch_name" = "master" ]; then
+        branch_name=$(git branch --contains "$commit_hash" --all 2>/dev/null | grep -v -E "(main|master)" | grep -E "(origin/|remotes/)" | head -1 | sed 's/.*origin\///g' | sed 's/^ *//g' | sed 's/remotes\/origin\///g')
+    fi
+    
+    # Method 3: If still no good branch, look at the commit subject for branch indicators
+    if [ -z "$branch_name" ] || [ "$branch_name" = "main" ] || [ "$branch_name" = "master" ]; then
+        local commit_message=$(git log -1 --pretty=format:"%s" "$commit_hash" 2>/dev/null)
+        # Look for branch patterns in PR merge messages like "Merge pull request #123 from user/branch-name"
+        branch_name=$(echo "$commit_message" | sed -n 's/.*from [^\/]*\/\([^)]*\).*/\1/p')
+        
+        # Look for patterns like "FEAT: something (#PR)" and extract from the hash
+        if [ -z "$branch_name" ]; then
+            local pr_number=$(echo "$commit_message" | sed -n 's/.*#\([0-9]*\).*/\1/p')
+            if [ -n "$pr_number" ] && command -v gh &> /dev/null; then
+                branch_name=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+            fi
+        fi
+    fi
+    
+    # Clean up the branch name
+    branch_name=$(echo "$branch_name" | sed 's/origin\///g' | sed 's/remotes\///g' | sed 's/^ *//g' | sed 's/ *$//g')
+    
+    # If we still don't have a good branch name, default to main
+    if [ -z "$branch_name" ] || [ "$branch_name" = "undefined" ]; then
+        branch_name="main"
+    fi
+    
+    echo "$branch_name"
 }
 
 # ==========================================
@@ -233,12 +292,8 @@ CLEAN_YEAR=$(sanitize_filename "$YEAR")
 CLEAN_USERNAME=$(sanitize_filename "$GITHUB_USERNAME")
 REPORT_FILENAME="${CLEAN_MONTH}_${CLEAN_YEAR}_${CLEAN_USERNAME}_report.md"
 
-# Handle existing file with backup
+# Set report file path
 REPORT_FILE="$DOWNLOADS_DIR/$REPORT_FILENAME"
-if [ -f "$REPORT_FILE" ]; then
-    BACKUP_FILE="$REPORT_FILE.backup.$(date +%s)"
-    cp "$REPORT_FILE" "$BACKUP_FILE" 2>/dev/null && echo "📋 Existing report backed up to: $BACKUP_FILE"
-fi
 
 # Start building the markdown report
 cat > "$REPORT_FILE" << EOF
@@ -284,9 +339,10 @@ create_temp_file() {
     fi
 }
 
-TEMP_COMMITS=$(create_temp_file "commits")
 TEMP_COMMIT_STATS=$(create_temp_file "stats")
 TEMP_DAY_STATS=$(create_temp_file "days")
+TEMP_BRANCH_DATA=$(create_temp_file "branches")
+TEMP_COMMIT_DETAILS=$(create_temp_file "details")
 
 # Create author pattern for enhanced matching
 AUTHOR_PATTERN=$(create_author_pattern "$AUTHOR" "$GITHUB_USERNAME")
@@ -313,26 +369,9 @@ for REPO_PATH in "${REPO_PATHS[@]}"; do
     TOTAL_COMMIT_COUNT=$((TOTAL_COMMIT_COUNT + REPO_COMMIT_COUNT))
     
     if [ "$REPO_COMMIT_COUNT" -gt 0 ]; then
-        # Add repository header with better formatting
-        echo "## 📁 Repository: $(basename "$REPO_PATH")" >> "$TEMP_COMMITS"
-        echo "" >> "$TEMP_COMMITS"
-        echo "**Path:** \`$REPO_PATH\`" >> "$TEMP_COMMITS"
-        echo "**Commits Found:** $REPO_COMMIT_COUNT" >> "$TEMP_COMMITS"
-        echo "**Primary Author Pattern:** $PRIMARY_AUTHOR" >> "$TEMP_COMMITS"
-        echo "" >> "$TEMP_COMMITS"
-        
-        # Start code block for commits
-        echo "\`\`\`" >> "$TEMP_COMMITS"
-        
-        # Get detailed commit information using the primary author (case-insensitive)
+        # Collect commit data for branch analysis
         git log --all --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
-            --pretty=format:"Commit: %h%nDate: %ai%nMessage: %s%nAuthor: %an <%ae>%n%b%n%n-------------------------------------------" --no-merges >> "$TEMP_COMMITS" 2>/dev/null
-        
-        # End code block
-        echo "" >> "$TEMP_COMMITS"
-        echo "\`\`\`" >> "$TEMP_COMMITS"
-        echo "" >> "$TEMP_COMMITS"
-        echo "" >> "$TEMP_COMMITS"
+            --pretty=format:"%H|%ai|%s|%D|$(basename "$REPO_PATH")" --no-merges 2>/dev/null >> "$TEMP_COMMIT_DETAILS"
         
         # Collect commit statistics using primary author (case-insensitive)
         git log --all --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
@@ -350,6 +389,40 @@ else
     cd - >/dev/null 2>&1 || true
 fi
 
+# Process commits to organize by branch
+echo "🌿 Analyzing branch-based commit organization..."
+if [ -s "$TEMP_COMMIT_DETAILS" ]; then
+    while IFS='|' read -r commit_hash commit_date commit_message branch_refs repo_name; do
+        # Get the repository path for this commit
+        REPO_PATH=""
+        for repo in "${REPO_PATHS[@]}"; do
+            if [ "$(basename "$repo")" = "$repo_name" ]; then
+                REPO_PATH="$repo"
+                break
+            fi
+        done
+        
+        # Get original branch name using our enhanced function
+        if [ -n "$REPO_PATH" ]; then
+            clean_branch=$(get_original_branch "$commit_hash" "$REPO_PATH")
+        else
+            # Fallback to parsing branch references
+            clean_branch=$(parse_branch_name "$branch_refs")
+        fi
+        
+        # Default to "main" if no branch detected
+        if [ -z "$clean_branch" ]; then
+            clean_branch="main"
+        fi
+        
+        # Create branch name with repository for clarity
+        branch_with_repo="${repo_name}/${clean_branch}"
+        
+        # Store branch association: branch_with_repo|commit_hash|date|message|repo
+        echo "$branch_with_repo|$commit_hash|$commit_date|$commit_message|$repo_name" >> "$TEMP_BRANCH_DATA"
+    done < "$TEMP_COMMIT_DETAILS"
+fi
+
 # Add executive summary with better formatting
 cat >> "$REPORT_FILE" << EOF
 ### 🎯 Executive Summary
@@ -364,10 +437,61 @@ cat >> "$REPORT_FILE" << EOF
 EOF
 
 if [ "$TOTAL_COMMIT_COUNT" -gt 0 ]; then
-    echo "### Detailed Commits by Repository" >> "$REPORT_FILE"
+    echo "### 🌿 Commits Organized by Branch" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
-    cat "$TEMP_COMMITS" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
+    
+    if [ -s "$TEMP_BRANCH_DATA" ]; then
+        # Group commits by branch
+        echo "#### Commits Grouped by Branch Name" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        
+        # Get unique branches and count them
+        UNIQUE_BRANCHES=$(cut -d'|' -f1 "$TEMP_BRANCH_DATA" | sort | uniq)
+        BRANCH_COUNT=$(echo "$UNIQUE_BRANCHES" | wc -l | tr -d ' ')
+        
+        echo "**Total Branches:** $BRANCH_COUNT" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        
+        # Process each unique branch
+        echo "$UNIQUE_BRANCHES" | while read -r branch; do
+            if [ -n "$branch" ]; then
+                commit_count=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | wc -l | tr -d ' ')
+                echo "##### 🌱 \`$branch\` ($commit_count commits)" >> "$REPORT_FILE"
+                echo "" >> "$REPORT_FILE"
+                
+                echo "| Commit | Date | Message | Repository |" >> "$REPORT_FILE"
+                echo "|--------|------|---------|------------|" >> "$REPORT_FILE"
+                
+                # Show commits for this branch
+                grep "^$branch|" "$TEMP_BRANCH_DATA" | while IFS='|' read -r b_branch b_hash b_date b_message b_repo; do
+                    # Clean up data for table display
+                    short_hash=$(echo "$b_hash" | cut -c1-8)
+                    clean_message=$(echo "$b_message" | sed 's/|/ /g' | cut -c1-60)
+                    date_only=$(echo "$b_date" | cut -d' ' -f1)
+                    
+                    echo "| \`$short_hash\` | $date_only | $clean_message | $b_repo |" >> "$REPORT_FILE"
+                done
+                echo "" >> "$REPORT_FILE"
+            fi
+        done
+        
+        echo "#### Branch Summary" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        echo "| Branch | Commits | Repositories |" >> "$REPORT_FILE"
+        echo "|--------|---------|--------------|" >> "$REPORT_FILE"
+        
+        echo "$UNIQUE_BRANCHES" | while read -r branch; do
+            if [ -n "$branch" ]; then
+                commit_count=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | wc -l | tr -d ' ')
+                repo_list=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | cut -d'|' -f5 | sort | uniq | tr '\n' ', ' | sed 's/, $//')
+                echo "| **\`$branch\`** | $commit_count | $repo_list |" >> "$REPORT_FILE"
+            fi
+        done
+        echo "" >> "$REPORT_FILE"
+    else
+        echo "> No branch data found in commit history." >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+    fi
     
     # Add commit statistics with proper markdown formatting
     echo "### 📊 Commit Statistics" >> "$REPORT_FILE"
@@ -412,7 +536,7 @@ else
 fi
 
 # Clean up temp files
-rm -f "$TEMP_COMMITS" "$TEMP_COMMIT_STATS" "$TEMP_DAY_STATS"
+rm -f "$TEMP_COMMIT_STATS" "$TEMP_DAY_STATS" "$TEMP_BRANCH_DATA" "$TEMP_COMMIT_DETAILS"
 
 # Step 2: Extract PR reviews
 echo "🔄 Extracting PR reviews..."
@@ -579,3 +703,13 @@ echo "✅ Report generated: $REPORT_FILE"
 echo ""
 echo "📄 View your report:"
 echo "   cat $REPORT_FILE"
+
+# Return to original directory
+cd "$ORIGINAL_DIR"
+}
+
+# If script is executed directly (not sourced), run the function
+# Check if the script is being executed directly rather than sourced
+if [[ "${(%):-%N}" == "${0}" ]] || [[ "$0" == *"commit-chronicle" && "$0" != "-zsh" ]]; then
+    commit_chronicle "$@"
+fi
