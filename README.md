@@ -1,82 +1,92 @@
 # 📊 Commit Chronicle
 
-A zsh script that generates professional monthly development reports from your git commits and GitHub activity.
+**Generate beautiful monthly development reports from your git commits - organized by branch!**
 
-## 🚀 Quick Setup
+Turn your git history into professional reports that show exactly what you worked on, organized by feature branches, bug fixes, and more.
 
-### 1. Install Prerequisites
+## 🚀 Super Simple Setup
 
-**macOS:**
-```bash
-brew install gh  # GitHub CLI (optional for PR data)
-```
-
-**Linux:**
-```bash
-sudo apt install gh
-```
-
-**Windows:**
-```bash
-winget install GitHub.cli
-```
-
-### 2. Setup Script
+### Step 1: Copy this to your terminal
 
 ```bash
-# Make executable
-chmod +x commit-chronicle
+# Add this line to your ~/.zshrc file
+echo 'source /Users/ashish/projects/commit-chronicle/commit-chronicle' >> ~/.zshrc
 
-# Add to PATH (permanent)
-echo 'export PATH="$PATH:$(pwd)"' >> ~/.zshrc
+# Reload your terminal
 source ~/.zshrc
 ```
 
-### 3. Configure Repositories
+### Step 2: Configure your repositories
 
-Edit the script (around line 111):
+Open the script file and find this section (around line 162):
+
 ```bash
 REPO_PATHS=(
-    "/path/to/your/repo1"
-    "/path/to/your/repo2"
+    "/Users/ashish/work/forked/cx-saas-dashboard"
+    "/Users/ashish/work/forked/cx-saas-server"
+    # Add your repository paths here
 )
 ```
 
-### 4. GitHub CLI (Optional)
-
+**Replace with your actual repository paths!** For example:
 ```bash
-gh auth login
+REPO_PATHS=(
+    "/Users/yourname/projects/my-awesome-app"
+    "/Users/yourname/work/company-project"
+)
 ```
 
-## 📊 Usage
+### Step 3: Done! 🎉
+
+Now you can run `commit_chronicle` from anywhere in your terminal:
 
 ```bash
-commit-chronicle
+commit_chronicle
 ```
 
-Follow the prompts:
-- Month (YYYY-MM)
-- Your full name
-- GitHub username
+## 📋 What You'll Get
 
-**Output:** `MonthName_YYYY_username_report.md`
+✅ **Branch-Based Organization** - See commits grouped by feature branches  
+✅ **Professional Reports** - Clean markdown with tables and statistics  
+✅ **Multi-Repository Support** - Analyze multiple projects at once  
+✅ **GitHub Integration** - Includes PR data when available  
+✅ **Saved to Downloads** - Reports automatically saved to your Downloads folder
 
-## 🔧 Features
+### Sample Output:
+```
+📊 Monthly Development Report - September 2025
 
-- Professional markdown reports with tables and statistics
-- Multi-repository analysis
-- Case-insensitive author matching
-- GitHub PR integration
-- Cross-platform compatibility
+🌿 Commits Organized by Branch:
+├── cx-saas-dashboard/feat/user-authentication (15 commits)
+├── cx-saas-dashboard/fix/login-bug (3 commits)
+├── my-app/feature/dark-mode (8 commits)
+└── my-app/main (2 commits)
+```
 
-## ⚠️ Troubleshooting
+## 🔧 Optional: GitHub CLI Setup
 
-| Issue | Solution |
-|-------|----------|
-| Command not found | Add script directory to PATH |
-| No commits found | Check git author name matches input |
-| Not a git repo | Run from git repository or configure REPO_PATHS |
+For pull request data, install GitHub CLI:
+
+**macOS:** `brew install gh`  
+**Linux:** `sudo apt install gh`  
+**Windows:** `winget install GitHub.cli`
+
+Then: `gh auth login`
+
+## ❓ Common Questions
+
+**Q: Where do I find my repository paths?**  
+A: Use `pwd` command when you're inside your project folder
+
+**Q: Can I change the output location?**  
+A: Reports are automatically saved to your Downloads folder
+
+**Q: What if I don't see my commits?**  
+A: Make sure your git name matches what you enter when running the script
+
+**Q: Does this work on Windows?**  
+A: Yes! Works on Windows Git Bash, macOS, and Linux
 
 ---
 
-*Generate professional monthly development reports in seconds.*
+**🎯 Generate your development report in under 30 seconds!**
