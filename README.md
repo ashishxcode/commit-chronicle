@@ -52,6 +52,7 @@ commit_chronicle
 ✅ **GitHub Integration** - Includes PR data when available  
 ✅ **Saved to Downloads** - Reports automatically saved to your Downloads folder
 
+
 ### Sample Output:
 ```
 📊 Monthly Development Report - September 2025

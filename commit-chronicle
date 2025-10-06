@@ -73,9 +73,54 @@ count_lines() {
     fi
 }
 
+# Error handling function
+handle_error() {
+    local error_message="$1"
+    local error_code="${2:-1}"
+    echo "❌ ERROR: $error_message" >&2
+    echo "💡 Try running with debugging: bash -x $0" >&2
+    exit $error_code
+}
+
+# Validate prerequisites
+validate_prerequisites() {
+    # Check if git is installed
+    if ! command -v git &> /dev/null; then
+        handle_error "Git is not installed. Please install Git and try again."
+    fi
+    
+    # Check if we have at least one valid repository
+    if [ ${#REPO_PATHS[@]} -eq 0 ]; then
+        handle_error "No valid Git repositories found. Please check your repository paths."
+    fi
+}
+
+# Validate user input
+validate_input() {
+    local month="$1"
+    local author="$2"
+    local username="$3"
+    
+    if [[ ! $month =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
+        handle_error "Invalid month format '$month'. Use YYYY-MM (e.g., 2024-08)"
+    fi
+    
+    if [ -z "$author" ]; then
+        handle_error "Author name cannot be empty"
+    fi
+    
+    if [ -z "$username" ]; then
+        handle_error "GitHub username cannot be empty"
+    fi
+}
+
+# Start timing
+START_TIME=$(date +%s)
+
 echo "📋 Monthly Development Report Generator"
 echo "========================================"
 echo "🖥️  Platform: $OS_TYPE ($(uname -s))"
+echo "⏱️  Started: $(date +"%Y-%m-%d %H:%M:%S")"
 echo ""
 
 # Interactive input collection
@@ -90,6 +135,9 @@ AUTHOR=${AUTHOR_INPUT:-"Ashish Patel"}
 echo -n "🐙 Enter GitHub username [ashishxcode]: "
 read GITHUB_USERNAME_INPUT
 GITHUB_USERNAME=${GITHUB_USERNAME_INPUT:-"ashishxcode"}
+
+# Validate input
+validate_input "$MONTH" "$AUTHOR" "$GITHUB_USERNAME"
 
 # Create comprehensive author patterns for git log matching
 # This handles various name/email combinations and case variations
@@ -109,6 +157,52 @@ parse_branch_name() {
     # Extract the main branch name from git references like "origin/feature/ABC-123-description"
     # Remove origin/, HEAD ->, and other git reference prefixes
     echo "$branch_refs" | sed -E 's/.*(origin\/|HEAD -> )//g' | sed 's/,.*//g' | sed 's/^ *//g'
+}
+
+# Find branches where user has pushed commits during the date range
+find_user_branches() {
+    local repo_path="$1"
+    local author="$2"
+    local start_date="$3"
+    local end_date="$4"
+    
+    cd "$repo_path"
+    
+    # Get all branches that contain commits by the user in the date range
+    # This includes both local and remote branches
+    local user_branches=$(git for-each-ref --format='%(refname:short)' refs/heads/ refs/remotes/ | while read branch; do
+        # Check if this branch has commits by the user in our date range
+        local commit_count=$(git log "$branch" --author="$author" --regexp-ignore-case --since="$start_date" --until="$end_date" --oneline 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$commit_count" -gt 0 ]; then
+            # Clean up branch name (remove origin/ prefix)
+            echo "$branch" | sed 's/origin\///g' | sed 's/remotes\/origin\///g'
+        fi
+    done | sort -u)
+    
+    echo "$user_branches"
+}
+
+# Get the most likely branch where user worked on this commit
+get_user_work_branch() {
+    local commit_hash="$1"
+    local repo_path="$2"
+    local user_branches="$3"
+    
+    cd "$repo_path"
+    
+    # First, try to find which user branch contains this commit
+    echo "$user_branches" | while read branch; do
+        if [ -n "$branch" ] && git merge-base --is-ancestor "$commit_hash" "$branch" 2>/dev/null; then
+            # This branch contains the commit - check if it's not just main/master
+            if [ "$branch" != "main" ] && [ "$branch" != "master" ]; then
+                echo "$branch"
+                return
+            fi
+        fi
+    done
+    
+    # Fallback to original branch detection logic
+    get_original_branch "$commit_hash" "$repo_path"
 }
 
 # Get the original branch name for a commit using git name-rev
@@ -210,6 +304,9 @@ else
     REPO_PATHS=("${VALID_REPOS[@]}")
 fi
 
+# Validate prerequisites after repository setup
+validate_prerequisites
+
 # Validate month format
 if [[ ! $MONTH =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
     echo "❌ Invalid month format. Use YYYY-MM (e.g., 2025-07)"
@@ -220,7 +317,20 @@ fi
 YEAR=$(echo $MONTH | cut -d'-' -f1)
 MONTH_NUMBER=$(echo $MONTH | cut -d'-' -f2)
 START_DATE="${YEAR}-${MONTH_NUMBER}-01"
-END_DATE="${YEAR}-${MONTH_NUMBER}-31"
+
+# Calculate last day of month correctly (accounts for Feb, 30-day months, etc.)
+if [ "$OS_TYPE" = "macos" ]; then
+    # macOS date command
+    END_DATE=$(date -j -v1d -v+1m -v-1d -f "%Y-%m-%d" "${YEAR}-${MONTH_NUMBER}-01" "+%Y-%m-%d" 2>/dev/null)
+else
+    # Linux date command
+    END_DATE=$(date -d "${YEAR}-${MONTH_NUMBER}-01 +1 month -1 day" "+%Y-%m-%d" 2>/dev/null)
+fi
+
+# Fallback to day 31 if date calculation fails
+if [ -z "$END_DATE" ]; then
+    END_DATE="${YEAR}-${MONTH_NUMBER}-31"
+fi
 
 # Get month name
 case $MONTH_NUMBER in
@@ -306,15 +416,62 @@ cat > "$REPORT_FILE" << EOF
 
 ---
 
-## 📝 Commits Summary
+## 🔄 Pull Request Reviews
 
 EOF
 
-# Step 1: Extract commits from all repositories
-echo "📝 Extracting commits from ${#REPO_PATHS[@]} repositories..."
+# Get GitHub repository URL
+get_github_url() {
+    local repo_path="$1"
+    cd "$repo_path"
+    local remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+    
+    if [ -n "$remote_url" ]; then
+        # Convert SSH to HTTPS format and remove .git suffix
+        echo "$remote_url" | sed 's/git@github.com:/https:\/\/github.com\//' | sed 's/\.git$//'
+    fi
+}
 
-# Initialize counters
-TOTAL_COMMIT_COUNT=0
+# Create GitHub commit link if possible
+create_commit_link() {
+    local commit_hash="$1"
+    local repo_path="$2"
+    local github_url=$(get_github_url "$repo_path")
+    
+    if [ -n "$github_url" ]; then
+        echo "${github_url}/commit/${commit_hash}"
+    fi
+}
+
+# Extract commit type from message (feat, fix, chore, etc.)
+get_commit_type() {
+    local message="$1"
+    local type=$(echo "$message" | grep -oiE '^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|hotfix)' | tr '[:upper:]' '[:lower:]')
+    if [ -n "$type" ]; then
+        echo "$type"
+    else
+        echo "other"
+    fi
+}
+
+# Progress indicator function
+show_progress() {
+    local step="$1"
+    local total="$2"
+    local message="$3"
+    local percent=$((step * 100 / total))
+    local filled=$((percent / 5))
+    local empty=$((20 - filled))
+    
+    printf "\r🔄 Progress: ["
+    printf "%*s" $filled | tr ' ' '█'
+    printf "%*s" $empty | tr ' ' '░'
+    printf "] %d%% - %s" $percent "$message"
+    
+    if [ $step -eq $total ]; then
+        echo ""
+    fi
+}
 
 # Cross-platform temporary file creation
 create_temp_file() {
@@ -339,245 +496,131 @@ create_temp_file() {
     fi
 }
 
-TEMP_COMMIT_STATS=$(create_temp_file "stats")
-TEMP_DAY_STATS=$(create_temp_file "days")
-TEMP_BRANCH_DATA=$(create_temp_file "branches")
-TEMP_COMMIT_DETAILS=$(create_temp_file "details")
-
-# Create author pattern for enhanced matching
-AUTHOR_PATTERN=$(create_author_pattern "$AUTHOR" "$GITHUB_USERNAME")
-
-# Process each repository
-for REPO_PATH in "${REPO_PATHS[@]}"; do
-    echo "  🔍 Processing: $(basename "$REPO_PATH")"
-    
-    cd "$REPO_PATH"
-    git fetch --all >/dev/null 2>&1 || true
-    
-    # Get commit count using multiple author patterns (case-insensitive)
-    REPO_COMMIT_COUNT_NAME=$(git log --all --author="$AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" --oneline --no-merges 2>/dev/null | count_lines)
-    REPO_COMMIT_COUNT_USERNAME=$(git log --all --author="$GITHUB_USERNAME" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" --oneline --no-merges 2>/dev/null | count_lines)
-    
-    # Use the higher count (some commits might be under name, others under username)
-    if [ "$REPO_COMMIT_COUNT_USERNAME" -gt "$REPO_COMMIT_COUNT_NAME" ]; then
-        REPO_COMMIT_COUNT=$REPO_COMMIT_COUNT_USERNAME
-        PRIMARY_AUTHOR="$GITHUB_USERNAME"
-    else
-        REPO_COMMIT_COUNT=$REPO_COMMIT_COUNT_NAME
-        PRIMARY_AUTHOR="$AUTHOR"
-    fi
-    TOTAL_COMMIT_COUNT=$((TOTAL_COMMIT_COUNT + REPO_COMMIT_COUNT))
-    
-    if [ "$REPO_COMMIT_COUNT" -gt 0 ]; then
-        # Collect commit data for branch analysis
-        git log --all --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
-            --pretty=format:"%H|%ai|%s|%D|$(basename "$REPO_PATH")" --no-merges 2>/dev/null >> "$TEMP_COMMIT_DETAILS"
-        
-        # Collect commit statistics using primary author (case-insensitive)
-        git log --all --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
-            --pretty=format:"%ad" --date=short --no-merges 2>/dev/null >> "$TEMP_COMMIT_STATS"
-        git log --all --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
-            --pretty=format:"%ad" --date=format:"%A" --no-merges 2>/dev/null >> "$TEMP_DAY_STATS"
-    fi
-done
-
-# Return to original directory
-if [ "$OS_TYPE" = "windows" ]; then
-    # Windows Git Bash sometimes has issues with cd -
-    cd "$(dirname "$0")" 2>/dev/null || true
-else
-    cd - >/dev/null 2>&1 || true
-fi
-
-# Process commits to organize by branch
-echo "🌿 Analyzing branch-based commit organization..."
-if [ -s "$TEMP_COMMIT_DETAILS" ]; then
-    while IFS='|' read -r commit_hash commit_date commit_message branch_refs repo_name; do
-        # Get the repository path for this commit
-        REPO_PATH=""
-        for repo in "${REPO_PATHS[@]}"; do
-            if [ "$(basename "$repo")" = "$repo_name" ]; then
-                REPO_PATH="$repo"
-                break
-            fi
-        done
-        
-        # Get original branch name using our enhanced function
-        if [ -n "$REPO_PATH" ]; then
-            clean_branch=$(get_original_branch "$commit_hash" "$REPO_PATH")
-        else
-            # Fallback to parsing branch references
-            clean_branch=$(parse_branch_name "$branch_refs")
-        fi
-        
-        # Default to "main" if no branch detected
-        if [ -z "$clean_branch" ]; then
-            clean_branch="main"
-        fi
-        
-        # Create branch name with repository for clarity
-        branch_with_repo="${repo_name}/${clean_branch}"
-        
-        # Store branch association: branch_with_repo|commit_hash|date|message|repo
-        echo "$branch_with_repo|$commit_hash|$commit_date|$commit_message|$repo_name" >> "$TEMP_BRANCH_DATA"
-    done < "$TEMP_COMMIT_DETAILS"
-fi
-
-# Add executive summary with better formatting
-cat >> "$REPORT_FILE" << EOF
-### 🎯 Executive Summary
-
-| Metric | Value |
-|--------|-------|
-| **Total Commits** | $TOTAL_COMMIT_COUNT |
-| **Repositories Analyzed** | ${#REPO_PATHS[@]} |
-| **Period** | $START_DATE to $END_DATE |
-| **Active Days** | $([ -s "$TEMP_COMMIT_STATS" ] && sort "$TEMP_COMMIT_STATS" | uniq | wc -l | tr -d ' ' || echo "0") |
-
-EOF
-
-if [ "$TOTAL_COMMIT_COUNT" -gt 0 ]; then
-    echo "### 🌿 Commits Organized by Branch" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-    
-    if [ -s "$TEMP_BRANCH_DATA" ]; then
-        # Group commits by branch
-        echo "#### Commits Grouped by Branch Name" >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-        
-        # Get unique branches and count them
-        UNIQUE_BRANCHES=$(cut -d'|' -f1 "$TEMP_BRANCH_DATA" | sort | uniq)
-        BRANCH_COUNT=$(echo "$UNIQUE_BRANCHES" | wc -l | tr -d ' ')
-        
-        echo "**Total Branches:** $BRANCH_COUNT" >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-        
-        # Process each unique branch
-        echo "$UNIQUE_BRANCHES" | while read -r branch; do
-            if [ -n "$branch" ]; then
-                commit_count=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | wc -l | tr -d ' ')
-                echo "##### 🌱 \`$branch\` ($commit_count commits)" >> "$REPORT_FILE"
-                echo "" >> "$REPORT_FILE"
-                
-                echo "| Commit | Date | Message | Repository |" >> "$REPORT_FILE"
-                echo "|--------|------|---------|------------|" >> "$REPORT_FILE"
-                
-                # Show commits for this branch
-                grep "^$branch|" "$TEMP_BRANCH_DATA" | while IFS='|' read -r b_branch b_hash b_date b_message b_repo; do
-                    # Clean up data for table display
-                    short_hash=$(echo "$b_hash" | cut -c1-8)
-                    clean_message=$(echo "$b_message" | sed 's/|/ /g' | cut -c1-60)
-                    date_only=$(echo "$b_date" | cut -d' ' -f1)
-                    
-                    echo "| \`$short_hash\` | $date_only | $clean_message | $b_repo |" >> "$REPORT_FILE"
-                done
-                echo "" >> "$REPORT_FILE"
-            fi
-        done
-        
-        echo "#### Branch Summary" >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-        echo "| Branch | Commits | Repositories |" >> "$REPORT_FILE"
-        echo "|--------|---------|--------------|" >> "$REPORT_FILE"
-        
-        echo "$UNIQUE_BRANCHES" | while read -r branch; do
-            if [ -n "$branch" ]; then
-                commit_count=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | wc -l | tr -d ' ')
-                repo_list=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | cut -d'|' -f5 | sort | uniq | tr '\n' ', ' | sed 's/, $//')
-                echo "| **\`$branch\`** | $commit_count | $repo_list |" >> "$REPORT_FILE"
-            fi
-        done
-        echo "" >> "$REPORT_FILE"
-    else
-        echo "> No branch data found in commit history." >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-    fi
-    
-    # Add commit statistics with proper markdown formatting
-    echo "### 📊 Commit Statistics" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-    
-    # Daily commit breakdown
-    echo "#### Commits by Date" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-    if [ -s "$TEMP_COMMIT_STATS" ]; then
-        echo "| Date | Commits |" >> "$REPORT_FILE"
-        echo "|------|---------|" >> "$REPORT_FILE"
-        sort "$TEMP_COMMIT_STATS" | uniq -c | sort -rn | while read -r count date; do
-            echo "| $date | $count |" >> "$REPORT_FILE"
-        done
-    else
-        echo "No commit data available." >> "$REPORT_FILE"
-    fi
-    echo "" >> "$REPORT_FILE"
-    
-    # Weekly activity breakdown
-    echo "#### Most Active Days of Week" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-    if [ -s "$TEMP_DAY_STATS" ]; then
-        echo "| Day | Commits |" >> "$REPORT_FILE"
-        echo "|-----|---------|" >> "$REPORT_FILE"
-        sort "$TEMP_DAY_STATS" | uniq -c | sort -rn | while read -r count day; do
-            echo "| $day | $count |" >> "$REPORT_FILE"
-        done
-    else
-        echo "No day activity data available." >> "$REPORT_FILE"
-    fi
-    echo "" >> "$REPORT_FILE"
-else
-    echo "### ℹ️ No Commits Found" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-    echo "> No commits were found for this period across all configured repositories." >> "$REPORT_FILE"
-    echo "> This could mean:" >> "$REPORT_FILE"
-    echo "> - No development activity during this period" >> "$REPORT_FILE"
-    echo "> - Author name/username mismatch in git configuration" >> "$REPORT_FILE"
-    echo "> - Repository paths need to be updated" >> "$REPORT_FILE"
-    echo "" >> "$REPORT_FILE"
-fi
-
-# Clean up temp files
-rm -f "$TEMP_COMMIT_STATS" "$TEMP_DAY_STATS" "$TEMP_BRANCH_DATA" "$TEMP_COMMIT_DETAILS"
-
-# Step 2: Extract PR reviews
+# Extract PR reviews first
 echo "🔄 Extracting PR reviews..."
-
-cat >> "$REPORT_FILE" << EOF
-
----
-
-## 🔄 Pull Request Reviews
-
-EOF
 
 if command -v gh &> /dev/null; then
     echo "### PRs Reviewed by Me" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
-    
-    # Get PRs reviewed by user with detailed formatting
+
+    # Get PRs reviewed by user with comprehensive search including all review types
     TEMP_REVIEWED=$(create_temp_file "reviewed")
-    gh pr list --search "reviewed-by:$GITHUB_USERNAME created:$START_DATE..$END_DATE" \
-        --limit 100 --state all --json number,title,state,repository \
-        --template '{{range .}}{{.number}}{{\"\\t\"}}{{.title}}{{\"\\t\"}}{{.state}}{{\"\\t\"}}{{.repository.name}}{{\"\\n\"}}{{end}}' \
-        2>/dev/null > "$TEMP_REVIEWED" || echo "" > "$TEMP_REVIEWED"
-    
+
+    # Search for PRs where user participated in reviews from all configured repositories
+    # gh pr list requires repository context, so we iterate through repos
+    for REPO_PATH in "${REPO_PATHS[@]}"; do
+        cd "$REPO_PATH"
+        REPO_NAME=$(basename "$REPO_PATH")
+
+        # Method 1: PRs where user was explicitly listed as reviewer (approved reviews)
+        gh pr list --search "reviewed-by:$GITHUB_USERNAME" \
+            --limit 100 --state all --json number,title,state,reviews \
+            2>/dev/null | jq -r ".[] | @base64" 2>/dev/null | while read -r pr_base64; do
+                if [ -z "$pr_base64" ]; then
+                    continue
+                fi
+
+                pr_json=$(echo "$pr_base64" | base64 -d 2>/dev/null)
+                if [ $? -ne 0 ]; then
+                    continue
+                fi
+
+                pr_number=$(echo "$pr_json" | jq -r '.number' 2>/dev/null)
+                pr_title=$(echo "$pr_json" | jq -r '.title' 2>/dev/null)
+                pr_state=$(echo "$pr_json" | jq -r '.state' 2>/dev/null)
+
+                # Get the user's actual review submission dates
+                review_dates=$(echo "$pr_json" | jq -r ".reviews[]? | select(.author.login == \"$GITHUB_USERNAME\") | .submittedAt" 2>/dev/null | cut -d'T' -f1)
+
+                # Check if any review was submitted in our date range
+                echo "$review_dates" | while read -r review_date; do
+                    if [ -n "$review_date" ]; then
+                        if [[ "$review_date" > "$START_DATE" || "$review_date" = "$START_DATE" ]] && [[ "$review_date" < "$END_DATE" || "$review_date" = "$END_DATE" ]]; then
+                            echo "$pr_number"$'\t'"$pr_title"$'\t'"$pr_state"$'\t'"$REPO_NAME"$'\t'"$review_date"$'\t'"approved"
+                            break
+                        fi
+                    fi
+                done
+            done
+
+        # Method 2: PRs where user was involved (commented, requested changes, etc.)
+        gh pr list --search "involves:$GITHUB_USERNAME -author:$GITHUB_USERNAME" \
+            --limit 100 --state all --json number,title,state,reviews \
+            2>/dev/null | jq -r ".[] | @base64" 2>/dev/null | while read -r pr_base64; do
+                if [ -z "$pr_base64" ]; then
+                    continue
+                fi
+
+                pr_json=$(echo "$pr_base64" | base64 -d 2>/dev/null)
+                if [ $? -ne 0 ]; then
+                    continue
+                fi
+
+                pr_number=$(echo "$pr_json" | jq -r '.number' 2>/dev/null)
+                pr_title=$(echo "$pr_json" | jq -r '.title' 2>/dev/null)
+                pr_state=$(echo "$pr_json" | jq -r '.state' 2>/dev/null)
+
+                # Get the user's actual review submission dates
+                review_dates=$(echo "$pr_json" | jq -r ".reviews[]? | select(.author.login == \"$GITHUB_USERNAME\") | .submittedAt" 2>/dev/null | cut -d'T' -f1)
+
+                # Check if any review was submitted in our date range
+                echo "$review_dates" | while read -r review_date; do
+                    if [ -n "$review_date" ]; then
+                        if [[ "$review_date" > "$START_DATE" || "$review_date" = "$START_DATE" ]] && [[ "$review_date" < "$END_DATE" || "$review_date" = "$END_DATE" ]]; then
+                            echo "$pr_number"$'\t'"$pr_title"$'\t'"$pr_state"$'\t'"$REPO_NAME"$'\t'"$review_date"$'\t'"reviewed"
+                            break
+                        fi
+                    fi
+                done
+            done
+    done | sort -u > "$TEMP_REVIEWED" || echo "" > "$TEMP_REVIEWED"
+
     if [ -s "$TEMP_REVIEWED" ]; then
-        # Count reviewed PRs first
-        REVIEWED_COUNT=$(cat "$TEMP_REVIEWED" | count_lines)
-        echo "**Total PRs Reviewed:** $REVIEWED_COUNT" >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
-        
-        # Create markdown table for better formatting
-        echo "| PR # | Title | Status | Repository |" >> "$REPORT_FILE"
-        echo "|------|-------|--------|------------|" >> "$REPORT_FILE"
-        
-        # Format PR data as a markdown table
-        while IFS=$'\t' read -r number title state repo; do
-            # Clean up the data and format it properly
-            clean_title=$(echo "$title" | sed 's/|/ /g')  # Remove pipes that would break table
-            clean_repo=$(echo "$repo" | sed 's/.*\///') # Extract just repo name from full path
-            echo "| #$number | $clean_title | $state | $clean_repo |" >> "$REPORT_FILE"
+        # PRs are already filtered by actual review date, just format them
+        TEMP_FILTERED=$(create_temp_file "filtered_reviewed")
+        while IFS=$'\t' read -r number title state repo review_date review_type; do
+            if [ -n "$number" ] && [ -n "$review_date" ]; then
+                echo "$number"$'\t'"$title"$'\t'"$state"$'\t'"$repo"$'\t'"$review_date"$'\t'"$review_type" >> "$TEMP_FILTERED"
+            fi
         done < "$TEMP_REVIEWED"
-        echo "" >> "$REPORT_FILE"
+        
+        if [ -s "$TEMP_FILTERED" ]; then
+            # Group by PR number and collect all review dates for each PR
+            TEMP_GROUPED=$(create_temp_file "grouped_reviews")
+
+            # Sort by PR number and date, then process unique PRs
+            sort -t$'\t' -k1,1n -k5,5 "$TEMP_FILTERED" | while IFS=$'\t' read -r number title state repo review_date review_type; do
+                echo "$number"$'\t'"$title"$'\t'"$state"$'\t'"$repo"$'\t'"$review_date"
+            done | sort -u -t$'\t' -k1,1n > "$TEMP_GROUPED"
+
+            REVIEWED_COUNT=$(cat "$TEMP_GROUPED" | cut -f1 | sort -u | count_lines)
+            echo "**Total PRs Reviewed:** $REVIEWED_COUNT" >> "$REPORT_FILE"
+            echo "" >> "$REPORT_FILE"
+            echo '```' >> "$REPORT_FILE"
+
+            # Format PR data in codeblock matching commit style (single line)
+            while IFS=$'\t' read -r number title state repo review_date; do
+                clean_title=$(echo "$title" | sed 's/|/ /g')
+                clean_repo=$(echo "$repo" | sed 's/.*\///')
+
+                # Map state to emoji
+                case "$state" in
+                    "MERGED") state_icon="✓" ;;
+                    "OPEN") state_icon="○" ;;
+                    "CLOSED") state_icon="✕" ;;
+                    *) state_icon="•" ;;
+                esac
+
+                printf "└─ %s | PR #%s [%s] %s %s %s\n\n" "$review_date" "$number" "$clean_repo" "$state_icon" "$state" "$clean_title" >> "$REPORT_FILE"
+            done < "$TEMP_GROUPED"
+            echo '```' >> "$REPORT_FILE"
+            echo "" >> "$REPORT_FILE"
+            rm -f "$TEMP_GROUPED"
+        else
+            echo "> No PRs reviewed during this period." >> "$REPORT_FILE"
+            echo "" >> "$REPORT_FILE"
+        fi
+        rm -f "$TEMP_FILTERED"
     else
         echo "> No PRs reviewed during this period." >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
@@ -586,30 +629,45 @@ if command -v gh &> /dev/null; then
     echo "### PRs Authored by Me" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"
     
-    # Get PRs authored by user with detailed formatting
+    # Get PRs authored by user with detailed formatting - loop through each repository
     TEMP_AUTHORED=$(create_temp_file "authored")
-    gh pr list --search "author:$GITHUB_USERNAME created:$START_DATE..$END_DATE" \
-        --limit 100 --state all --json number,title,state,repository \
-        --template '{{range .}}{{.number}}{{\"\\t\"}}{{.title}}{{\"\\t\"}}{{.state}}{{\"\\t\"}}{{.repository.name}}{{\"\\n\"}}{{end}}' \
-        2>/dev/null > "$TEMP_AUTHORED" || echo "" > "$TEMP_AUTHORED"
-    
+    TEMP_PR_BRANCHES=$(create_temp_file "pr_branches")
+
+    for REPO_PATH in "${REPO_PATHS[@]}"; do
+        cd "$REPO_PATH"
+        REPO_NAME=$(basename "$REPO_PATH")
+
+        # Get authored PRs from this repository with branch info
+        gh pr list --search "author:$GITHUB_USERNAME created:$START_DATE..$END_DATE" \
+            --limit 100 --state all --json number,title,state,createdAt,headRefName \
+            2>/dev/null | jq -r ".[] | [.number, .title, .state, \"$REPO_NAME\", .createdAt, .headRefName] | @tsv" 2>/dev/null >> "$TEMP_AUTHORED"
+    done
+
     if [ -s "$TEMP_AUTHORED" ]; then
         # Count authored PRs first
         AUTHORED_COUNT=$(cat "$TEMP_AUTHORED" | count_lines)
         echo "**Total PRs Authored:** $AUTHORED_COUNT" >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
-        
-        # Create markdown table for better formatting
-        echo "| PR # | Title | Status | Repository |" >> "$REPORT_FILE"
-        echo "|------|-------|--------|------------|" >> "$REPORT_FILE"
-        
-        # Format PR data as a markdown table
-        while IFS=$'\t' read -r number title state repo; do
-            # Clean up the data and format it properly
-            clean_title=$(echo "$title" | sed 's/|/ /g')  # Remove pipes that would break table
-            clean_repo=$(echo "$repo" | sed 's/.*\///') # Extract just repo name from full path
-            echo "| #$number | $clean_title | $state | $clean_repo |" >> "$REPORT_FILE"
-        done < "$TEMP_AUTHORED"
+
+        # Sort PRs by date and display as simple list
+        sort -t$'\t' -k5 "$TEMP_AUTHORED" | while IFS=$'\t' read -r number title state repo created_at branch_name; do
+            if [ -n "$number" ]; then
+                clean_title=$(echo "$title" | sed 's/|/ /g')
+                clean_repo=$(echo "$repo" | sed 's/.*\///')
+                created_date=$(echo "$created_at" | cut -d'T' -f1)
+
+                # Map state to emoji
+                case "$state" in
+                    "MERGED") state_icon="✓" ;;
+                    "OPEN") state_icon="○" ;;
+                    "CLOSED") state_icon="✕" ;;
+                    *) state_icon="•" ;;
+                esac
+
+                printf "- %s | PR #%s [%s] %s %s %s\n" "$created_date" "$number" "$clean_repo" "$state_icon" "$state" "$clean_title" >> "$REPORT_FILE"
+            fi
+        done
+
         echo "" >> "$REPORT_FILE"
     else
         echo "> No PRs authored during this period." >> "$REPORT_FILE"
@@ -644,65 +702,292 @@ else
     echo "" >> "$REPORT_FILE"
 fi
 
-# Add comprehensive footer section
 cat >> "$REPORT_FILE" << EOF
 
 ---
 
-## 📈 Final Summary & Metrics
+## 📝 Commits Summary
 
-### 🎯 Key Performance Indicators
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **Total Commits** | $TOTAL_COMMIT_COUNT | Across all repositories |
-| **Repositories Analyzed** | ${#REPO_PATHS[@]} | Active repositories |
-| **Reporting Period** | \`$START_DATE\` to \`$END_DATE\` | $(echo "$MONTH_NAME $YEAR") |
-| **Report Generated** | $(date +"%Y-%m-%d %H:%M:%S") | Automated extraction |
-
-### 📁 Repository Breakdown
-
-| Repository | Commits | Path |
-|------------|---------|------|
 EOF
 
-# Add repository summary with better formatting
+# Step 1: Extract commits from all repositories
+echo "📝 Extracting commits from ${#REPO_PATHS[@]} repositories..."
+
+# Initialize counters
+TOTAL_COMMIT_COUNT=0
+
+TEMP_COMMIT_STATS=$(create_temp_file "stats")
+TEMP_DAY_STATS=$(create_temp_file "days")
+TEMP_BRANCH_DATA=$(create_temp_file "branches")
+TEMP_COMMIT_DETAILS=$(create_temp_file "details")
+
+# Create author pattern for enhanced matching
+AUTHOR_PATTERN=$(create_author_pattern "$AUTHOR" "$GITHUB_USERNAME")
+
+# Process each repository
+REPO_INDEX=0
 for REPO_PATH in "${REPO_PATHS[@]}"; do
+    REPO_INDEX=$((REPO_INDEX + 1))
+    show_progress $REPO_INDEX ${#REPO_PATHS[@]} "Processing $(basename "$REPO_PATH")"
+    
     cd "$REPO_PATH"
-    # Check both name and username patterns for accurate count
-    REPO_COUNT_NAME=$(git log --all --author="$AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" --oneline --no-merges 2>/dev/null | count_lines)
-    REPO_COUNT_USERNAME=$(git log --all --author="$GITHUB_USERNAME" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" --oneline --no-merges 2>/dev/null | count_lines)
-    REPO_COMMIT_COUNT=$([ "$REPO_COUNT_USERNAME" -gt "$REPO_COUNT_NAME" ] && echo "$REPO_COUNT_USERNAME" || echo "$REPO_COUNT_NAME")
-    echo "| **$(basename "$REPO_PATH")** | $REPO_COMMIT_COUNT | \`$REPO_PATH\` |" >> "$REPORT_FILE"
+    git fetch --all >/dev/null 2>&1 || true
+    
+    # Get commit count using multiple author patterns (case-insensitive) - include all commits including from merged PRs
+    REPO_COMMIT_COUNT_NAME=$(git log --all --full-history --author="$AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" --oneline 2>/dev/null | count_lines)
+    REPO_COMMIT_COUNT_USERNAME=$(git log --all --full-history --author="$GITHUB_USERNAME" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" --oneline 2>/dev/null | count_lines)
+    
+    # Use the higher count (some commits might be under name, others under username)
+    if [ "$REPO_COMMIT_COUNT_USERNAME" -gt "$REPO_COMMIT_COUNT_NAME" ]; then
+        REPO_COMMIT_COUNT=$REPO_COMMIT_COUNT_USERNAME
+        PRIMARY_AUTHOR="$GITHUB_USERNAME"
+    else
+        REPO_COMMIT_COUNT=$REPO_COMMIT_COUNT_NAME
+        PRIMARY_AUTHOR="$AUTHOR"
+    fi
+    TOTAL_COMMIT_COUNT=$((TOTAL_COMMIT_COUNT + REPO_COMMIT_COUNT))
+    
+    if [ "$REPO_COMMIT_COUNT" -gt 0 ]; then
+        # Find branches where user actually pushed commits during this date range
+        USER_BRANCHES=$(find_user_branches "$REPO_PATH" "$PRIMARY_AUTHOR" "$START_DATE" "$END_DATE")
+        
+        # Store user branches for this repo in a temp file for later use
+        echo "REPO:$(basename "$REPO_PATH")|BRANCHES:$USER_BRANCHES" >> "${TEMP_BRANCH_DATA}.user_branches"
+        
+        # Collect commit data for branch analysis - use comprehensive approach to capture ALL commits
+        # This includes commits from merged PRs that might not appear in regular --all logs
+        git log --all --full-history --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
+            --pretty=format:"%H|%ai|%s|%D|$(basename "$REPO_PATH")" 2>/dev/null >> "$TEMP_COMMIT_DETAILS"
+        
+        # Collect commit statistics using primary author (case-insensitive) - include all commits with full history
+        git log --all --full-history --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
+            --pretty=format:"%ad" --date=short 2>/dev/null >> "$TEMP_COMMIT_STATS"
+        git log --all --full-history --author="$PRIMARY_AUTHOR" --regexp-ignore-case --since="$START_DATE" --until="$END_DATE" \
+            --pretty=format:"%ad" --date=format:"%A" 2>/dev/null >> "$TEMP_DAY_STATS"
+    fi
 done
-cd - >/dev/null 2>&1 || true
+
+# Return to original directory
+if [ "$OS_TYPE" = "windows" ]; then
+    # Windows Git Bash sometimes has issues with cd -
+    cd "$(dirname "$0")" 2>/dev/null || true
+else
+    cd - >/dev/null 2>&1 || true
+fi
+
+# Remove duplicate commits and process them to organize by branch
+echo "🌿 Analyzing branch-based commit organization..."
+if [ -s "$TEMP_COMMIT_DETAILS" ]; then
+    # Remove duplicate commits based on hash (first field)
+    sort "$TEMP_COMMIT_DETAILS" | uniq > "${TEMP_COMMIT_DETAILS}.tmp"
+    mv "${TEMP_COMMIT_DETAILS}.tmp" "$TEMP_COMMIT_DETAILS"
+    while IFS='|' read -r commit_hash commit_date commit_message branch_refs repo_name; do
+        # Get the repository path for this commit
+        REPO_PATH=""
+        for repo in "${REPO_PATHS[@]}"; do
+            if [ "$(basename "$repo")" = "$repo_name" ]; then
+                REPO_PATH="$repo"
+                break
+            fi
+        done
+        
+        # Get user branches for this repository
+        USER_BRANCHES=""
+        if [ -f "${TEMP_BRANCH_DATA}.user_branches" ]; then
+            USER_BRANCHES=$(grep "^REPO:$repo_name|" "${TEMP_BRANCH_DATA}.user_branches" 2>/dev/null | cut -d'|' -f2 | sed 's/BRANCHES://')
+        fi
+        
+        # Get the most likely branch where user worked on this commit
+        if [ -n "$REPO_PATH" ] && [ -n "$USER_BRANCHES" ]; then
+            clean_branch=$(get_user_work_branch "$commit_hash" "$REPO_PATH" "$USER_BRANCHES")
+        elif [ -n "$REPO_PATH" ]; then
+            # Fallback to original branch detection
+            clean_branch=$(get_original_branch "$commit_hash" "$REPO_PATH")
+        else
+            # Fallback to parsing branch references
+            clean_branch=$(parse_branch_name "$branch_refs")
+        fi
+        
+        # Default to "main" if no branch detected
+        if [ -z "$clean_branch" ]; then
+            clean_branch="main"
+        fi
+        
+        # Create branch name with repository for clarity
+        branch_with_repo="${repo_name}/${clean_branch}"
+        
+        # Store branch association: branch_with_repo|commit_hash|date|message|repo
+        echo "$branch_with_repo|$commit_hash|$commit_date|$commit_message|$repo_name" >> "$TEMP_BRANCH_DATA"
+    done < "$TEMP_COMMIT_DETAILS"
+fi
+
+
+if [ "$TOTAL_COMMIT_COUNT" -gt 0 ]; then
+    echo "### 🌿 Commits Organized by Branch" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    
+    # Show branches where user actually pushed commits
+    if [ -f "${TEMP_BRANCH_DATA}.user_branches" ]; then
+        echo "#### 🚀 User's Active Branches (where commits were pushed)" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        echo '```' >> "$REPORT_FILE"
+        while IFS='|' read -r repo_info branches_info; do
+            repo_name=$(echo "$repo_info" | cut -d':' -f2)
+            user_branches=$(echo "$branches_info" | cut -d':' -f2)
+            if [ -n "$user_branches" ]; then
+                echo "Repository: $repo_name" >> "$REPORT_FILE"
+                echo "$user_branches" | tr ' ' '\n' | while read branch; do
+                    if [ -n "$branch" ]; then
+                        echo "  📌 $branch" >> "$REPORT_FILE"
+                    fi
+                done
+                echo "" >> "$REPORT_FILE"
+            fi
+        done < "${TEMP_BRANCH_DATA}.user_branches"
+        echo '```' >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+    fi
+    
+    if [ -s "$TEMP_BRANCH_DATA" ]; then
+        # Group commits by branch
+        echo "#### Commits Grouped by Branch Name" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        
+        # Get unique branches sorted by earliest commit date
+        # Create temp file with branch name and earliest date
+        TEMP_BRANCH_DATES=$(create_temp_file "branch_dates")
+        cut -d'|' -f1 "$TEMP_BRANCH_DATA" | sort | uniq | while read -r branch; do
+            if [ -n "$branch" ]; then
+                # Get earliest commit date for this branch
+                earliest_date=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | cut -d'|' -f3 | sort | head -1)
+                echo "$earliest_date|$branch" >> "$TEMP_BRANCH_DATES"
+            fi
+        done
+
+        # Sort branches by date and extract branch names
+        UNIQUE_BRANCHES=$(sort "$TEMP_BRANCH_DATES" | cut -d'|' -f2)
+        BRANCH_COUNT=$(echo "$UNIQUE_BRANCHES" | wc -l | tr -d ' ')
+
+        echo "**Total Branches:** $BRANCH_COUNT" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+
+        # Process each unique branch (sorted by date)
+        echo "$UNIQUE_BRANCHES" | while read -r branch; do
+            if [ -n "$branch" ]; then
+                commit_count=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | wc -l | tr -d ' ')
+
+                # Get date range for this branch
+                branch_commits=$(grep "^$branch|" "$TEMP_BRANCH_DATA" | cut -d'|' -f3 | sort)
+                first_commit_date=$(echo "$branch_commits" | head -1 | cut -d' ' -f1)
+                last_commit_date=$(echo "$branch_commits" | tail -1 | cut -d' ' -f1)
+
+                # Determine branch status based on commit messages (merged PRs or active)
+                branch_status="○ active"
+                branch_name_only=$(echo "$branch" | cut -d'/' -f2-)
+
+                # Check if any commit message indicates this was merged (contains PR merge pattern)
+                if grep "^$branch|" "$TEMP_BRANCH_DATA" | cut -d'|' -f4 | grep -qiE "(#[0-9]+|merged|merge pull request)"; then
+                    branch_status="✓ merged"
+                fi
+
+                # Format date range display
+                if [ "$first_commit_date" = "$last_commit_date" ]; then
+                    date_range="$first_commit_date"
+                else
+                    date_range="$first_commit_date → $last_commit_date"
+                fi
+
+                echo "##### 🌱 \`$branch\` ($commit_count commits) | $date_range | $branch_status" >> "$REPORT_FILE"
+                echo "" >> "$REPORT_FILE"
+                echo '```' >> "$REPORT_FILE"
+                
+                # Show commits for this branch in codeblock format with full details - sorted chronologically
+                grep "^$branch|" "$TEMP_BRANCH_DATA" | sort -t'|' -k3 | while IFS='|' read -r b_branch b_hash b_date b_message b_repo; do
+                    # Clean up data for codeblock display
+                    short_hash=$(echo "$b_hash" | cut -c1-8)
+                    full_hash="$b_hash"
+                    clean_message=$(echo "$b_message" | sed 's/|/ /g')
+                    date_time=$(echo "$b_date" | cut -d' ' -f1,2)
+                    date_only=$(echo "$b_date" | cut -d' ' -f1)
+                    
+                    # Get commit type for statistics
+                    commit_type=$(get_commit_type "$clean_message")
+                    
+                    # Get repository path for GitHub links
+                    COMMIT_REPO_PATH=""
+                    for repo in "${REPO_PATHS[@]}"; do
+                        if [ "$(basename "$repo")" = "$b_repo" ]; then
+                            COMMIT_REPO_PATH="$repo"
+                            break
+                        fi
+                    done
+                    
+                    # Create GitHub link if available
+                    github_link=""
+                    if [ -n "$COMMIT_REPO_PATH" ]; then
+                        github_link=$(create_commit_link "$full_hash" "$COMMIT_REPO_PATH")
+                    fi
+                    
+                    # Display commit with better formatting
+                    printf "┌─ %s\n" "$date_time" >> "$REPORT_FILE"
+                    printf "└─ %s\n\n" "$clean_message" >> "$REPORT_FILE"
+                done
+                echo '```' >> "$REPORT_FILE"
+                echo "" >> "$REPORT_FILE"
+            fi
+        done
+        
+        
+    else
+        echo "> No branch data found in commit history." >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+    fi
+    
+else
+    echo "### ℹ️ No Commits Found" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    echo "> No commits were found for this period across all configured repositories." >> "$REPORT_FILE"
+    echo "> This could mean:" >> "$REPORT_FILE"
+    echo "> - No development activity during this period" >> "$REPORT_FILE"
+    echo "> - Author name/username mismatch in git configuration" >> "$REPORT_FILE"
+    echo "> - Repository paths need to be updated" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+fi
+
+# Clean up temp files
+rm -f "$TEMP_COMMIT_STATS" "$TEMP_DAY_STATS" "$TEMP_BRANCH_DATA" "$TEMP_COMMIT_DETAILS" "${TEMP_BRANCH_DATA}.user_branches" "$TEMP_BRANCH_DATES"
 
 cat >> "$REPORT_FILE" << 'EOF'
 
 ---
 
-### 🔧 Technical Notes
-
-- **Data Source:** Git commit history and GitHub CLI
-- **Author Matching:** Case-insensitive pattern matching for both name and username
-- **Date Range:** Inclusive of start and end dates
-- **Merge Commits:** Excluded from analysis
-- **Branches:** All branches analyzed (`--all` flag)
-
-### 📋 Report Information
-
-> This report was automatically generated using:
-> - **Git** for commit extraction and analysis
-> - **GitHub CLI** for pull request data
-> - **Cross-platform compatibility** for Windows, macOS, and Linux
-
 *Generated by [Commit Chronicle](https://github.com/your-username/commit-chronicle) - Monthly Development Report Generator*
 EOF
 
-echo "✅ Report generated: $REPORT_FILE"
+# Calculate execution time
+END_TIME=$(date +%s)
+EXECUTION_TIME=$((END_TIME - START_TIME))
+MINUTES=$((EXECUTION_TIME / 60))
+SECONDS=$((EXECUTION_TIME % 60))
+
+echo "✅ Report generated successfully!"
 echo ""
-echo "📄 View your report:"
-echo "   cat $REPORT_FILE"
+echo "📊 Generation Statistics:"
+echo "   ⏱️  Execution time: ${MINUTES}m ${SECONDS}s"
+echo "   📝 Total commits: $TOTAL_COMMIT_COUNT"
+echo "   📁 Repositories: ${#REPO_PATHS[@]}"
+echo "   📂 Report location: $REPORT_FILE"
+echo ""
+echo "📄 Quick Actions:"
+echo "   📖 View report:     cat '$REPORT_FILE'"
+echo "   📋 Copy to clipboard: cat '$REPORT_FILE' | pbcopy"
+echo "   📧 Open in editor:   open '$REPORT_FILE'"
+echo "   🌐 Share via GitHub: Upload to a gist or repository"
+echo ""
+echo "💡 Tips:"
+echo "   • Commit links are included for GitHub repositories"
+echo "   • Commits are categorized by type (feat, fix, chore, etc.)"
+echo "   • Use different date ranges for quarterly or yearly reports"
 
 # Return to original directory
 cd "$ORIGINAL_DIR"
