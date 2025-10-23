@@ -97,18 +97,27 @@ validate_prerequisites() {
 
 # Validate user input
 validate_input() {
-    local month="$1"
-    local author="$2"
-    local username="$3"
-    
-    if [[ ! $month =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
-        handle_error "Invalid month format '$month'. Use YYYY-MM (e.g., 2024-08)"
+    local date_input="$1"
+    local mode="$2"
+    local author="$3"
+    local username="$4"
+
+    if [ "$mode" = "month" ]; then
+        if [[ ! $date_input =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
+            handle_error "Invalid month format '$date_input'. Use YYYY-MM (e.g., 2024-08)"
+        fi
+    elif [ "$mode" = "date" ]; then
+        if [[ ! $date_input =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            handle_error "Invalid date format '$date_input'. Use YYYY-MM-DD (e.g., 2024-08-15)"
+        fi
+    else
+        handle_error "Invalid mode '$mode'. Must be 'month' or 'date'"
     fi
-    
+
     if [ -z "$author" ]; then
         handle_error "Author name cannot be empty"
     fi
-    
+
     if [ -z "$username" ]; then
         handle_error "GitHub username cannot be empty"
     fi
@@ -117,16 +126,48 @@ validate_input() {
 # Start timing
 START_TIME=$(date +%s)
 
-echo "📋 Monthly Development Report Generator"
+echo "📋 Development Report Generator"
 echo "========================================"
 echo "🖥️  Platform: $OS_TYPE ($(uname -s))"
 echo "⏱️  Started: $(date +"%Y-%m-%d %H:%M:%S")"
 echo ""
 
-# Interactive input collection
-echo -n "📅 Enter month (YYYY-MM) [$(date +"%Y-%m")]: "
-read MONTH_INPUT
-MONTH=${MONTH_INPUT:-$(date +"%Y-%m")}
+# Ask user for extraction mode
+echo "📊 Report Type:"
+echo "   1) Month-based (entire month)"
+echo "   2) Date-based (specific day)"
+echo -n "Choose option [1]: "
+read MODE_CHOICE
+MODE_CHOICE=${MODE_CHOICE:-1}
+
+case $MODE_CHOICE in
+    1)
+        REPORT_MODE="month"
+        echo ""
+        echo "📅 Month-based report selected"
+        ;;
+    2)
+        REPORT_MODE="date"
+        echo ""
+        echo "📅 Date-based report selected"
+        ;;
+    *)
+        echo "❌ Invalid option. Defaulting to month-based."
+        REPORT_MODE="month"
+        ;;
+esac
+
+# Interactive input collection based on mode
+echo ""
+if [ "$REPORT_MODE" = "month" ]; then
+    echo -n "📅 Enter month (YYYY-MM) [$(date +"%Y-%m")]: "
+    read DATE_INPUT
+    DATE_INPUT=${DATE_INPUT:-$(date +"%Y-%m")}
+else
+    echo -n "📅 Enter date (YYYY-MM-DD) [$(date +"%Y-%m-%d")]: "
+    read DATE_INPUT
+    DATE_INPUT=${DATE_INPUT:-$(date +"%Y-%m-%d")}
+fi
 
 echo -n "👤 Enter your full name [Ashish Patel]: "
 read AUTHOR_INPUT
@@ -137,7 +178,7 @@ read GITHUB_USERNAME_INPUT
 GITHUB_USERNAME=${GITHUB_USERNAME_INPUT:-"ashishxcode"}
 
 # Validate input
-validate_input "$MONTH" "$AUTHOR" "$GITHUB_USERNAME"
+validate_input "$DATE_INPUT" "$REPORT_MODE" "$AUTHOR" "$GITHUB_USERNAME"
 
 # Create comprehensive author patterns for git log matching
 # This handles various name/email combinations and case variations
@@ -264,6 +305,8 @@ get_original_branch() {
 REPO_PATHS=(
     "/Users/ashish/work/forked/cx-saas-dashboard"
     "/Users/ashish/work/forked/cx-saas-server"
+    "/Users/ashish/work/cx-partners"
+    "/Users/ashish/work/saas-super-admin"
 )
 
 # If no repositories configured, use current working directory
@@ -307,50 +350,118 @@ fi
 # Validate prerequisites after repository setup
 validate_prerequisites
 
-# Validate month format
-if [[ ! $MONTH =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
-    echo "❌ Invalid month format. Use YYYY-MM (e.g., 2025-07)"
-    exit 1
-fi
+# Parse date input and calculate date range based on mode
+if [ "$REPORT_MODE" = "month" ]; then
+    MONTH="$DATE_INPUT"
 
-# Parse month for date range
-YEAR=$(echo $MONTH | cut -d'-' -f1)
-MONTH_NUMBER=$(echo $MONTH | cut -d'-' -f2)
-START_DATE="${YEAR}-${MONTH_NUMBER}-01"
+    # Validate month format
+    if [[ ! $MONTH =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
+        echo "❌ Invalid month format. Use YYYY-MM (e.g., 2025-07)"
+        exit 1
+    fi
 
-# Calculate last day of month correctly (accounts for Feb, 30-day months, etc.)
-if [ "$OS_TYPE" = "macos" ]; then
-    # macOS date command
-    END_DATE=$(date -j -v1d -v+1m -v-1d -f "%Y-%m-%d" "${YEAR}-${MONTH_NUMBER}-01" "+%Y-%m-%d" 2>/dev/null)
+    # Parse month for date range
+    YEAR=$(echo $MONTH | cut -d'-' -f1)
+    MONTH_NUMBER=$(echo $MONTH | cut -d'-' -f2)
+    START_DATE="${YEAR}-${MONTH_NUMBER}-01"
+
+    # Calculate last day of month correctly (accounts for Feb, 30-day months, etc.)
+    if [ "$OS_TYPE" = "macos" ]; then
+        # macOS date command
+        END_DATE=$(date -j -v1d -v+1m -v-1d -f "%Y-%m-%d" "${YEAR}-${MONTH_NUMBER}-01" "+%Y-%m-%d" 2>/dev/null)
+    else
+        # Linux date command
+        END_DATE=$(date -d "${YEAR}-${MONTH_NUMBER}-01 +1 month -1 day" "+%Y-%m-%d" 2>/dev/null)
+    fi
+
+    # Fallback to day 31 if date calculation fails
+    if [ -z "$END_DATE" ]; then
+        END_DATE="${YEAR}-${MONTH_NUMBER}-31"
+    fi
+
+    # Get month name
+    case $MONTH_NUMBER in
+        01) MONTH_NAME="January" ;;
+        02) MONTH_NAME="February" ;;
+        03) MONTH_NAME="March" ;;
+        04) MONTH_NAME="April" ;;
+        05) MONTH_NAME="May" ;;
+        06) MONTH_NAME="June" ;;
+        07) MONTH_NAME="July" ;;
+        08) MONTH_NAME="August" ;;
+        09) MONTH_NAME="September" ;;
+        10) MONTH_NAME="October" ;;
+        11) MONTH_NAME="November" ;;
+        12) MONTH_NAME="December" ;;
+    esac
+
+    REPORT_PERIOD="$MONTH_NAME $YEAR"
 else
-    # Linux date command
-    END_DATE=$(date -d "${YEAR}-${MONTH_NUMBER}-01 +1 month -1 day" "+%Y-%m-%d" 2>/dev/null)
-fi
+    # Date mode - single day
+    SPECIFIC_DATE="$DATE_INPUT"
 
-# Fallback to day 31 if date calculation fails
-if [ -z "$END_DATE" ]; then
-    END_DATE="${YEAR}-${MONTH_NUMBER}-31"
-fi
+    # Validate date format
+    if [[ ! $SPECIFIC_DATE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        echo "❌ Invalid date format. Use YYYY-MM-DD (e.g., 2025-10-23)"
+        exit 1
+    fi
 
-# Get month name
-case $MONTH_NUMBER in
-    01) MONTH_NAME="January" ;;
-    02) MONTH_NAME="February" ;;
-    03) MONTH_NAME="March" ;;
-    04) MONTH_NAME="April" ;;
-    05) MONTH_NAME="May" ;;
-    06) MONTH_NAME="June" ;;  
-    07) MONTH_NAME="July" ;;
-    08) MONTH_NAME="August" ;;
-    09) MONTH_NAME="September" ;;
-    10) MONTH_NAME="October" ;;
-    11) MONTH_NAME="November" ;;
-    12) MONTH_NAME="December" ;;
-esac
+    # For single day, START_DATE is the specific date
+    # END_DATE needs to be the next day because git's --until is exclusive
+    START_DATE="$SPECIFIC_DATE"
+
+    # Calculate next day for END_DATE (git --until is exclusive)
+    if [ "$OS_TYPE" = "macos" ]; then
+        # macOS date command
+        END_DATE=$(date -j -v+1d -f "%Y-%m-%d" "$SPECIFIC_DATE" "+%Y-%m-%d" 2>/dev/null)
+    else
+        # Linux date command
+        END_DATE=$(date -d "$SPECIFIC_DATE +1 day" "+%Y-%m-%d" 2>/dev/null)
+    fi
+
+    # Fallback if date calculation fails
+    if [ -z "$END_DATE" ]; then
+        # Manual calculation for fallback
+        YEAR=$(echo $SPECIFIC_DATE | cut -d'-' -f1)
+        MONTH_NUMBER=$(echo $SPECIFIC_DATE | cut -d'-' -f2)
+        DAY_NUMBER=$(echo $SPECIFIC_DATE | cut -d'-' -f3)
+        NEXT_DAY=$((10#$DAY_NUMBER + 1))
+        END_DATE="${YEAR}-${MONTH_NUMBER}-$(printf "%02d" $NEXT_DAY)"
+    fi
+
+    # Parse date components for display
+    YEAR=$(echo $SPECIFIC_DATE | cut -d'-' -f1)
+    MONTH_NUMBER=$(echo $SPECIFIC_DATE | cut -d'-' -f2)
+    DAY_NUMBER=$(echo $SPECIFIC_DATE | cut -d'-' -f3)
+
+    # Get month name
+    case $MONTH_NUMBER in
+        01) MONTH_NAME="January" ;;
+        02) MONTH_NAME="February" ;;
+        03) MONTH_NAME="March" ;;
+        04) MONTH_NAME="April" ;;
+        05) MONTH_NAME="May" ;;
+        06) MONTH_NAME="June" ;;
+        07) MONTH_NAME="July" ;;
+        08) MONTH_NAME="August" ;;
+        09) MONTH_NAME="September" ;;
+        10) MONTH_NAME="October" ;;
+        11) MONTH_NAME="November" ;;
+        12) MONTH_NAME="December" ;;
+    esac
+
+    REPORT_PERIOD="$MONTH_NAME $DAY_NUMBER, $YEAR"
+fi
 
 echo ""
 echo "📊 Generating report for:"
-echo "   Month: $MONTH_NAME $YEAR ($START_DATE to $END_DATE)"
+if [ "$REPORT_MODE" = "month" ]; then
+    echo "   Period: $MONTH_NAME $YEAR (entire month)"
+    echo "   Date Range: $START_DATE to $END_DATE"
+else
+    echo "   Period: $REPORT_PERIOD (single day)"
+    echo "   Date: $START_DATE"
+fi
 echo "   Author: $AUTHOR"
 echo "   GitHub: $GITHUB_USERNAME"
 echo "   Repositories: ${#REPO_PATHS[@]} repo(s)"
@@ -400,18 +511,33 @@ fi
 CLEAN_MONTH=$(sanitize_filename "$MONTH_NAME")
 CLEAN_YEAR=$(sanitize_filename "$YEAR")
 CLEAN_USERNAME=$(sanitize_filename "$GITHUB_USERNAME")
-REPORT_FILENAME="${CLEAN_MONTH}_${CLEAN_YEAR}_${CLEAN_USERNAME}_report.md"
+
+# Create filename based on report mode
+if [ "$REPORT_MODE" = "month" ]; then
+    REPORT_FILENAME="${CLEAN_MONTH}_${CLEAN_YEAR}_${CLEAN_USERNAME}_report.md"
+    REPORT_TITLE="Monthly Development Report - $MONTH_NAME $YEAR"
+else
+    CLEAN_DAY=$(sanitize_filename "$DAY_NUMBER")
+    REPORT_FILENAME="${CLEAN_MONTH}_${CLEAN_DAY}_${CLEAN_YEAR}_${CLEAN_USERNAME}_report.md"
+    REPORT_TITLE="Daily Development Report - $MONTH_NAME $DAY_NUMBER, $YEAR"
+fi
 
 # Set report file path
 REPORT_FILE="$DOWNLOADS_DIR/$REPORT_FILENAME"
 
 # Start building the markdown report
-cat > "$REPORT_FILE" << EOF
-# 📊 Monthly Development Report - $MONTH_NAME $YEAR
+if [ "$REPORT_MODE" = "month" ]; then
+    REPORT_DATE_RANGE="$START_DATE to $END_DATE"
+else
+    REPORT_DATE_RANGE="$START_DATE"
+fi
 
-> **Developer:** $AUTHOR  
-> **GitHub Username:** \`$GITHUB_USERNAME\`  
-> **Reporting Period:** \`$START_DATE\` to \`$END_DATE\`  
+cat > "$REPORT_FILE" << EOF
+# 📊 $REPORT_TITLE
+
+> **Developer:** $AUTHOR
+> **GitHub Username:** \`$GITHUB_USERNAME\`
+> **Reporting Period:** \`$REPORT_DATE_RANGE\`
 > **Generated:** $(date +"%B %d, %Y at %H:%M")
 
 ---
@@ -957,11 +1083,11 @@ fi
 # Clean up temp files
 rm -f "$TEMP_COMMIT_STATS" "$TEMP_DAY_STATS" "$TEMP_BRANCH_DATA" "$TEMP_COMMIT_DETAILS" "${TEMP_BRANCH_DATA}.user_branches" "$TEMP_BRANCH_DATES"
 
-cat >> "$REPORT_FILE" << 'EOF'
+cat >> "$REPORT_FILE" << EOF
 
 ---
 
-*Generated by [Commit Chronicle](https://github.com/your-username/commit-chronicle) - Monthly Development Report Generator*
+*Generated by [Commit Chronicle](https://github.com/your-username/commit-chronicle) - Development Report Generator*
 EOF
 
 # Calculate execution time
