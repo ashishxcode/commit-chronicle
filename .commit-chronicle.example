@@ -1,0 +1,16 @@
+# commit-chronicle — repo list
+#
+# One git repository path per line. Lines starting with # are ignored.
+# A leading ~ expands to your home directory.
+#
+# Use this for an explicit list of repos. Copy it to either:
+#   • ./.commit-chronicle                       (per-project, in a repo)
+#   • ~/.config/commit-chronicle/repos          (global)
+#
+# Prefer auto-discovery? Instead of listing repos, put PARENT directories in
+#   ~/.config/commit-chronicle/roots            (one dir per line, e.g. ~/work)
+# and every git repo beneath them is found automatically.
+
+~/projects/my-app
+~/projects/my-api
+~/work/some-service

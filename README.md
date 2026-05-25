@@ -1,275 +1,161 @@
-# 📊 Commit Chronicle
+# 📓 commit-chronicle
 
-**Generate beautiful development reports from your git commits - organized by branch!**
+Find your commits **and** pull requests across all your repos for a date range,
+pick what matters in an interactive terminal UI, and export a clean **worklog**
+(Markdown or JSON).
 
-Turn your git history into professional reports that show exactly what you worked on, with support for both monthly and daily reports, organized by feature branches, bug fixes, and more.
+A single self-contained binary — no `node`, `python`, `fzf`, or `gum` to
+install. The only requirement is **git**; **gh** (optional) unlocks PR & review
+discovery.
 
-## ✨ Features
+```
+range  →  PICK (fuzzy filter + multi-select + live preview)  →  EDIT  →  EXPORT
+```
 
-✅ **Daily or Monthly Reports** - Choose between single-day or full month analysis
-✅ **Branch-Based Organization** - See commits grouped by feature branches
-✅ **Professional Markdown Reports** - Clean formatting with tables and statistics
-✅ **Multi-Repository Support** - Analyze multiple projects at once
-✅ **GitHub Integration** - Includes PR reviews and authored PRs
-✅ **Cross-Platform** - Works on macOS, Linux, and Windows (Git Bash/WSL)
-✅ **Auto-Save** - Reports saved to your Downloads folder
+For a window you choose, it gathers **everything you did**:
 
-## 🚀 Quick Start for Teams
+- commits from git history (matched by author, across all branches)
+- commits on pull requests you authored
+- pull requests you authored
+- pull requests you reviewed
 
-### Prerequisites
+…deduped into one **tagged** picker (`commit` / `PR` / `review`).
 
-- **git** (required) - Usually already installed
-- **gh** (optional) - GitHub CLI for PR data
-- **zsh** or **bash** shell
+---
 
-### Installation
+## Install
+
+### Option 1 — `go install` (needs Go 1.24+)
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/yourusername/commit-chronicle.git
+go install github.com/ashishxcode/commit-chronicle/cmd/commit-chronicle@latest
+```
+
+This drops the `commit-chronicle` binary in `$(go env GOPATH)/bin` (usually
+`~/go/bin`). Make sure that's on your `PATH`:
+
+```bash
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc   # or ~/.bashrc
+exec $SHELL
+```
+
+### Option 2 — build from source
+
+```bash
+git clone https://github.com/ashishxcode/commit-chronicle
 cd commit-chronicle
-
-# 2. Make the script executable
-chmod +x commit-chronicle
-
-# 3. Optional: Add to PATH for global access
-echo 'export PATH="$PATH:'"$(pwd)"'"' >> ~/.zshrc
-source ~/.zshrc
+make install          # builds + installs to ~/go/bin
+# or: make build      # just produces ./bin/commit-chronicle
 ```
 
-### Configuration
+### Option 3 — download a release binary
 
-Before running, configure your repository paths by editing the `commit-chronicle` script:
+Grab the binary for your OS/arch from the
+[Releases](https://github.com/ashishxcode/commit-chronicle/releases) page, then:
 
 ```bash
-# Open the script
-nano commit-chronicle  # or use your preferred editor
-
-# Find this section (around line 264):
-REPO_PATHS=(
-    "/Users/ashish/work/forked/cx-saas-dashboard"
-    "/Users/ashish/work/forked/cx-saas-server"
-    "/Users/ashish/work/cx-partners"
-    "/Users/ashish/work/saas-super-admin"
-)
-
-# Replace with YOUR repository paths:
-REPO_PATHS=(
-    "/Users/yourname/projects/my-project"
-    "/Users/yourname/work/team-repo"
-    # Add as many repos as you need
-)
+chmod +x commit-chronicle-*        # macOS/Linux
+mv commit-chronicle-* /usr/local/bin/commit-chronicle
 ```
 
-**💡 Tip:** Use `pwd` inside your project folders to get the full path.
-
-## 📖 Usage
-
-### Interactive Mode (Recommended)
-
-Simply run the script and follow the prompts:
-
-```bash
-./commit-chronicle
-```
-
-You'll be asked to:
-1. **Choose report type**: Monthly (1) or Daily (2)
-2. **Enter date**:
-   - Month format: `2025-10` (for monthly)
-   - Date format: `2025-10-23` (for daily)
-3. **Enter your name**: e.g., "John Doe"
-4. **Enter GitHub username**: e.g., "johndoe"
-
-### Example Session
-
-```
-📋 Development Report Generator
-========================================
-🖥️  Platform: macos (Darwin)
-
-📊 Report Type:
-   1) Month-based (entire month)
-   2) Date-based (specific day)
-Choose option [1]: 2
-
-📅 Date-based report selected
-
-📅 Enter date (YYYY-MM-DD) [2025-10-23]: 2025-10-18
-👤 Enter your full name [Ashish Patel]: John Doe
-🐙 Enter GitHub username [ashishxcode]: johndoe
-
-✅ Found repository: /Users/john/projects/my-app
-----------------------------------------
-🔄 Extracting commits from 1 repositories...
-✅ Report generated successfully!
-```
-
-## 📋 What You'll Get
-
-### Monthly Report Example
-
-```markdown
-# 📊 Monthly Development Report - October 2025
-
-> **Developer:** John Doe
-> **GitHub Username:** `johndoe`
-> **Reporting Period:** `2025-10-01 to 2025-10-31`
+Maintainers can produce all platform binaries with `make release` (output in
+`dist/`).
 
 ---
 
-## 🔄 Pull Request Reviews
+## Usage
 
-### PRs Reviewed by Me
-**Total PRs Reviewed:** 5
+Run it inside a git repo, or configure repos/roots (below) to scan many at once:
 
-### PRs Authored by Me
-**Total PRs Authored:** 3
+```bash
+commit-chronicle                       # interactive: pick range → pick items → edit → export
+commit-chronicle --since "7 days ago"
+commit-chronicle --month 2026-05 --copy
+commit-chronicle --date 2026-05-25 --all --format json --out ./today.json
+```
+
+### Picker keys
+
+| Key            | Action               |
+| -------------- | -------------------- |
+| `↑` / `↓`      | move                 |
+| `space` / `tab`| toggle selection     |
+| `a`            | select / clear all   |
+| `/`            | fuzzy filter         |
+| `enter`        | confirm selection    |
+| `q` / `esc`    | cancel               |
+
+In the editor: `ctrl+s` save · `esc` cancel.
+
+### Options
+
+```
+--since <when>      relative range, e.g. "7 days ago"
+--from YYYY-MM-DD   start date (inclusive)
+--to   YYYY-MM-DD   end date (inclusive; default today)
+--month YYYY-MM     whole calendar month
+--date  YYYY-MM-DD  single day
+--author "Name"     author to match (default: git config user.name)
+--user <login>      GitHub login for PR discovery (default: gh user)
+--repos a,b,c       comma-separated repo paths
+--root  ~/work      comma-separated dirs to auto-discover git repos under
+--out <path>        output path (default: ~/Downloads, timestamped)
+--format md|json    output format (default: md)
+--all               select everything (skip the picker)
+--no-edit           skip the editor step
+--no-pr             skip GitHub PR + review discovery (git commits only)
+--copy              copy the worklog to the clipboard
+-h, --help          show help
+```
 
 ---
 
-## 📝 Commits Summary
+## Configuring which repos to scan
 
-### 🌿 Commits Organized by Branch
+Repo sources are **unioned** and checked in this order:
 
-##### 🌱 `my-app/feat/user-authentication` (15 commits)
+1. `--repos a,b,c` — explicit repo paths
+2. `--root ~/work` — directories to auto-discover git repos under
+3. `./.commit-chronicle` — explicit repo paths (one per line)
+4. `~/.config/commit-chronicle/repos` — same, global
+5. `~/.config/commit-chronicle/roots` — directories to auto-discover under
+6. fallback: the current directory, if it's a git repo
+
+The most convenient setup — point it at the folder that holds your projects,
+once:
+
+```bash
+mkdir -p ~/.config/commit-chronicle
+echo '~/work' > ~/.config/commit-chronicle/roots
 ```
-┌─ 2025-10-15 14:23:45
-└─ feat: add JWT token validation
 
-┌─ 2025-10-15 16:45:12
-└─ feat: implement refresh token mechanism
-```
-```
-
-### Daily Report Example
-
-```markdown
-# 📊 Daily Development Report - October 18, 2025
-
-> **Developer:** John Doe
-> **GitHub Username:** `johndoe`
-> **Reporting Period:** `2025-10-18`
+Now `commit-chronicle` scans every git repo under `~/work` from anywhere, with
+no flags. See [`.commit-chronicle.example`](.commit-chronicle.example) for the
+file format.
 
 ---
 
-## 📝 Commits Summary
+## How it works
 
-##### 🌱 `my-app/fix/login-bug` (3 commits)
-```
-┌─ 2025-10-18 09:15:30
-└─ fix: resolve login timeout issue
+- **Commits** come from `git log --all --author=<you>` across every ref.
+- **PRs / reviews** come from `gh` (the GitHub CLI). It lists your PRs in the
+  window, then fetches commit/review details per-PR — GitHub searches are
+  date-bounded so it only inspects PRs that could fall in range.
+- Everything is keyed by hash (commits) or repo+number (PRs) and de-duplicated,
+  so a commit that shows up both in history and on a PR appears once.
+- Output is grouped by date; commits, PRs and reviews each render as distinct,
+  link-bearing lines.
 
-┌─ 2025-10-18 11:42:18
-└─ test: add unit tests for login flow
-```
-```
-
-## 🔧 GitHub CLI Setup (Optional but Recommended)
-
-To include PR review data, install and authenticate with GitHub CLI:
-
-### Installation
-
-**macOS:**
-```bash
-brew install gh
-```
-
-**Linux:**
-```bash
-sudo apt install gh
-# or
-sudo snap install gh
-```
-
-**Windows:**
-```bash
-winget install GitHub.cli
-# or
-choco install gh
-```
-
-### Authentication
-
-```bash
-gh auth login
-```
-
-Follow the prompts to authenticate with your GitHub account.
-
-## 🛠️ Advanced Configuration
-
-### Multiple Authors
-
-If you use different git author names across repos, the script automatically detects and uses the most common one.
-
-### Custom Output Location
-
-Reports are saved to:
-- **macOS/Linux:** `~/Downloads/`
-- **Windows:** `%USERPROFILE%/Downloads/`
-
-Format: `October_2025_username_report.md` or `October_18_2025_username_report.md`
-
-### Cross-Platform Compatibility
-
-The script automatically detects your OS and adjusts:
-- Date calculations
-- Path handling
-- Temp file creation
-- Downloads directory location
-
-## ❓ Troubleshooting
-
-### "No commits found"
-
-**Possible causes:**
-1. Git author name mismatch - Check with: `git config user.name`
-2. Wrong date range
-3. No commits in configured repositories for that period
-
-**Fix:** Make sure the name you enter matches your git configuration.
-
-### "Not a git repository" errors
-
-**Fix:** Update the `REPO_PATHS` array in the script with valid repository paths.
-
-### Permissions error
-
-**Fix:** Make the script executable:
-```bash
-chmod +x commit-chronicle
-```
-
-### GitHub CLI not working
-
-**Fix:**
-1. Install: `brew install gh` (macOS) or `sudo apt install gh` (Linux)
-2. Authenticate: `gh auth login`
-3. Verify: `gh auth status`
-
-## 🤝 Contributing
-
-Contributions are welcome! Feel free to:
-- Report bugs via GitHub Issues
-- Submit feature requests
-- Create pull requests with improvements
-
-## 📝 License
-
-MIT License - Feel free to use this in your team!
-
-## 🎯 Pro Tips
-
-💡 **Quarterly Reports:** Use month mode for each month, then combine reports
-💡 **Daily Standup:** Use date mode to quickly see yesterday's work
-💡 **Performance Reviews:** Generate reports for review periods
-💡 **Team Sync:** Share reports in Slack/Teams to show progress
-💡 **Automation:** Create a cron job for weekly auto-generated reports
+No `gh`, or pass `--no-pr`, and it runs git-only.
 
 ---
 
-**Made with ❤️ for developers who want to track their work efficiently**
+## Requirements
 
-Need help? Open an issue on GitHub!
+- **git** (required)
+- **gh**, authenticated (`gh auth login`) — optional, for PR & review discovery
+- a clipboard tool for `--copy`: `pbcopy` (macOS), `wl-copy` or `xclip` (Linux)
+
+## License
+
+See [LICENSE](LICENSE).

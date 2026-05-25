@@ -17,3 +17,7 @@ monthly_data_*/
 # IDE
 .vscode/
 .idea/
+
+# Go build artifacts
+/bin/
+/dist/

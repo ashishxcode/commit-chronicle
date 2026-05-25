@@ -1,0 +1,32 @@
+name: release
+
+# Tag a version (e.g. `git tag v0.1.0 && git push --tags`) to build
+# cross-platform binaries and attach them to a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build cross-platform binaries
+        run: make release
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
