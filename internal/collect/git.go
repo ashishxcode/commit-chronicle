@@ -4,11 +4,23 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ashishxcode/commit-chronicle/internal/model"
 )
 
 const fieldSep = "\x1f" // ASCII unit separator
+
+// anchorMidnight pins a bare YYYY-MM-DD to local midnight. git's --since/--until
+// parse a bare date via approxidate, which fills the missing time with the
+// *current* time of day — skewing every window by the wall clock. Relative
+// strings (e.g. "7 days ago") are passed through untouched.
+func anchorMidnight(when string) string {
+	if _, err := time.Parse("2006-01-02", when); err == nil {
+		return when + " 00:00:00"
+	}
+	return when
+}
 
 // gitCommits returns de-duplicated commits authored by `author` in the range,
 // across all refs in each repo.
@@ -25,10 +37,10 @@ func gitCommits(repos []string, author string, r model.Range) []model.Item {
 			"--pretty=format:%h" + fieldSep + "%H" + fieldSep + "%ad" + fieldSep + "%s",
 		}
 		if r.Since != "" {
-			args = append(args, "--since="+r.Since)
+			args = append(args, "--since="+anchorMidnight(r.Since))
 		}
 		if r.Until != "" {
-			args = append(args, "--until="+r.Until)
+			args = append(args, "--until="+anchorMidnight(r.Until))
 		}
 
 		out, err := exec.Command("git", args...).Output()
