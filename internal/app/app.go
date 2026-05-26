@@ -2,6 +2,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,7 @@ type Config struct {
 	Author, User, Repos, Root    string
 	Out, Format                  string
 	NoEdit, All, Copy, NoPR      bool
+	Setup                        bool // force the guided first-run setup
 }
 
 // Run executes the whole pipeline.
@@ -31,7 +33,31 @@ func Run(c Config) error {
 		return fmt.Errorf("git is required but was not found on PATH")
 	}
 
-	repos, err := config.ResolveRepos(splitCSV(c.Repos), splitCSV(c.Root))
+	interactive := isTerminal()
+
+	// --setup forces the guided flow regardless of existing config.
+	if c.Setup && !interactive {
+		return fmt.Errorf("--setup needs an interactive terminal")
+	}
+
+	ranSetup := false
+	var repos []string
+	var err error
+	if c.Setup {
+		repos, err = firstRunSetup()
+		ranSetup = true
+	} else {
+		repos, err = config.ResolveRepos(splitCSV(c.Repos), splitCSV(c.Root))
+		if errors.Is(err, config.ErrNoRepos) {
+			if !interactive {
+				return fmt.Errorf("no repositories configured.\n" +
+					"  Point at repos with --repos <path,…> or --root <dir>, or configure\n" +
+					"  ~/.config/commit-chronicle/{repos,roots}. Run in a terminal for guided setup.")
+			}
+			repos, err = firstRunSetup()
+			ranSetup = true
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -44,8 +70,6 @@ func Run(c Config) error {
 		return fmt.Errorf("could not determine author; pass --author \"Your Name\"")
 	}
 
-	interactive := isTerminal()
-
 	rng, err := resolveRange(c, interactive)
 	if err != nil {
 		return err
@@ -55,6 +79,15 @@ func Run(c Config) error {
 	ghUser := c.User
 	if ghUser == "" && !c.NoPR && collect.HasGH() {
 		ghUser = ghLogin()
+	}
+	// If PRs/reviews were wanted but gh can't provide them, say so once (setup
+	// already reports gh status, so skip the note right after first-run setup).
+	if !c.NoPR && !ranSetup && ghUser == "" {
+		if !collect.HasGH() {
+			fmt.Fprintln(os.Stderr, "ℹ️  gh not found — commits only (install gh + `gh auth login` for PRs & reviews).")
+		} else {
+			fmt.Fprintln(os.Stderr, "ℹ️  gh not authenticated — commits only (run `gh auth login` for PRs & reviews).")
+		}
 	}
 
 	opts := collect.Options{
@@ -85,12 +118,25 @@ func Run(c Config) error {
 		return err
 	}
 	if len(items) == 0 {
-		return fmt.Errorf("nothing found for \"%s\" in range (%s)", author, rng.Label)
+		var b strings.Builder
+		fmt.Fprintf(&b, "nothing found for \"%s\" in range (%s)\n", author, rng.Label)
+		b.WriteString("  • try a wider range, e.g. --since \"30 days ago\"\n")
+		b.WriteString("  • check the name matches your commits: --author \"Your Name\"\n")
+		switch {
+		case c.NoPR:
+			b.WriteString("  • drop --no-pr to include PRs & reviews")
+		case ghUser == "":
+			b.WriteString("  • authenticate gh (`gh auth login`) to include PRs & reviews")
+		default:
+			b.WriteString("  • PR/review activity may live on a different remote — those are scanned automatically")
+		}
+		return fmt.Errorf("%s", b.String())
 	}
 
-	// Pick
+	// Pick. --all and --copy both take everything; --copy is meant to be a
+	// one-shot "scan and copy the lot", so it skips the picker entirely.
 	selected := items
-	if !c.All {
+	if !c.All && !c.Copy {
 		if !interactive {
 			return fmt.Errorf("no TTY for the picker; re-run with --all or in a terminal")
 		}
@@ -112,7 +158,7 @@ func Run(c Config) error {
 		content = render.JSON(selected, meta)
 	} else {
 		content = render.Markdown(selected, meta)
-		if !c.NoEdit && interactive {
+		if !c.NoEdit && interactive && !c.Copy {
 			edited, canceled, err := tui.Edit(content)
 			if err != nil {
 				return err
