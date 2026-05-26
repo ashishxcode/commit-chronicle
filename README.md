@@ -25,7 +25,7 @@ For a window you choose, it gathers **everything you did**:
 
 ## Install
 
-### Option 1 — `go install` (needs Go 1.24+)
+### Option 1 — `go install` (needs Go 1.25+)
 
 ```bash
 go install github.com/ashishxcode/commit-chronicle/cmd/commit-chronicle@latest
