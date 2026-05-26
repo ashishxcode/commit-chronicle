@@ -1,0 +1,29 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "ashishxcode",
+    "bubbletea",
+    "charmbracelet",
+    "fzf",
+    "GOBIN",
+    "GOPATH",
+    "gum",
+    "isatty",
+    "lipgloss",
+    "mattn",
+    "pbcopy",
+    "unioned",
+    "usr",
+    "worklog",
+    "xclip",
+    "xdg",
+    "Culture"
+  ],
+  "ignorePaths": [
+    "go.sum",
+    "go.mod",
+    "dist/",
+    "bin/"
+  ]
+}

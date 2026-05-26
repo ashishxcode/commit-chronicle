@@ -17,3 +17,16 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test -race ./...
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      # Scan dependencies and our own code for known Go vulnerabilities.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
