@@ -39,22 +39,29 @@ func Gather(o Options, p Progress) ([]model.Item, error) {
 		}
 	}
 
+	// Each phase is announced (count 0) before it runs so the UI can show what
+	// is currently being scanned — the GitHub phases, reviews especially, can
+	// take a while — then reported again with its result count when it finishes.
+	report("git history", 0)
 	items := gitCommits(o.Repos, o.Author, o.Range)
-	report("git commits", len(items))
+	report("git history", len(items))
 
 	useGH := o.User != "" && hasGH()
 	if useGH && o.IncludePRs {
+		report("commits on your PRs", 0)
 		pc := prCommits(o.Repos, o.User, o.Range)
-		report("PR commits", len(pc))
+		report("commits on your PRs", len(pc))
 		items = append(items, pc...)
 
+		report("PRs you authored", 0)
 		ap := authoredPRs(o.Repos, o.User, o.Range)
-		report("authored PRs", len(ap))
+		report("PRs you authored", len(ap))
 		items = append(items, ap...)
 	}
 	if useGH && o.IncludeReviews {
+		report("PRs you reviewed", 0)
 		rp := reviewedPRs(o.Repos, o.User, o.Range)
-		report("reviewed PRs", len(rp))
+		report("PRs you reviewed", len(rp))
 		items = append(items, rp...)
 	}
 

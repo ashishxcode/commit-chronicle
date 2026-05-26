@@ -1,6 +1,7 @@
 # Generated reports
 *.md
 !README.md
+!SECURITY.md
 
 # Temporary files
 temp_*

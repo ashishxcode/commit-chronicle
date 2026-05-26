@@ -3,6 +3,7 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -11,6 +12,10 @@ import (
 	"sort"
 	"strings"
 )
+
+// ErrNoRepos is returned by ResolveRepos when no repositories could be found
+// from any source. Callers can detect it (errors.Is) to offer interactive setup.
+var ErrNoRepos = errors.New("no repositories configured")
 
 // skipDirs are never descended into during root discovery.
 var skipDirs = map[string]bool{
@@ -59,9 +64,7 @@ func ResolveRepos(explicit, roots []string) ([]string, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no repos found\n" +
-			"  configure via --root ~/work, --repos, ./.commit-chronicle,\n" +
-			"  or ~/.config/commit-chronicle/{repos,roots}")
+		return nil, ErrNoRepos
 	}
 
 	// Validate + de-duplicate (preserve discovery order).
@@ -110,6 +113,78 @@ func discoverRepos(root string) []string {
 	})
 	sort.Strings(repos)
 	return repos
+}
+
+// RootCandidate is a directory found to contain git repositories during setup.
+type RootCandidate struct {
+	Path  string // absolute path
+	Count int    // number of git repos discovered beneath it
+}
+
+// commonRoots are the usual places developers keep their repos, probed during
+// first-run setup. The current working directory's parent is added separately.
+var commonRoots = []string{
+	"~/projects", "~/work", "~/code", "~/dev", "~/src", "~/repos",
+	"~/Documents/GitHub", "~/github", "~/go/src",
+}
+
+// ScanCommonRoots probes the usual repo locations (plus the current directory)
+// and returns those that actually contain git repos, most-repos first. It's the
+// menu source for interactive first-run setup.
+func ScanCommonRoots() []RootCandidate {
+	roots := append([]string{}, commonRoots...)
+	if cwd, err := os.Getwd(); err == nil {
+		roots = append(roots, cwd, filepath.Dir(cwd))
+	}
+	var out []RootCandidate
+	seen := map[string]bool{}
+	for _, r := range roots {
+		p := expand(r)
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+			continue
+		}
+		if n := len(discoverRepos(p)); n > 0 {
+			out = append(out, RootCandidate{Path: p, Count: n})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	return out
+}
+
+// CountRepos returns how many git repos live under dir (0 if none/invalid).
+func CountRepos(dir string) int { return len(discoverRepos(expand(dir))) }
+
+// RootsConfigPath is where the persisted list of root directories lives.
+func RootsConfigPath() string { return xdgPath("roots") }
+
+// SaveRoot appends a root directory to the roots config file (creating it and
+// its parent dir as needed), skipping a duplicate entry. Returns the file path.
+func SaveRoot(root string) (string, error) {
+	p := RootsConfigPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return "", err
+	}
+	root = expand(root)
+	if existing, ok := linesFromFile(p); ok {
+		for _, e := range existing {
+			if expand(e) == root {
+				return p, nil // already present
+			}
+		}
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintln(f, root); err != nil {
+		return "", err
+	}
+	return p, nil
 }
 
 func xdgPath(name string) string {

@@ -53,7 +53,8 @@ func parseFlags() (*app.Config, error) {
 	fs.BoolVar(&c.NoEdit, "no-edit", false, "skip the editor step")
 	fs.BoolVar(&c.All, "all", false, "select everything (skip the picker)")
 	fs.BoolVar(&c.NoPR, "no-pr", false, "skip GitHub PR + review discovery")
-	fs.BoolVar(&c.Copy, "copy", false, "copy the worklog to the clipboard")
+	fs.BoolVar(&c.Copy, "copy", false, "copy the whole worklog to the clipboard (skips the picker)")
+	fs.BoolVar(&c.Setup, "setup", false, "re-run the guided repo setup")
 	fs.Usage = usage
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
@@ -94,7 +95,8 @@ OPTIONS:
     --all               select everything (skip the picker)
     --no-edit           skip the editor step
     --no-pr             skip GitHub PR + review discovery (git commits only)
-    --copy              copy the worklog to the clipboard
+    --copy              copy the whole worklog to the clipboard (skips the picker)
+    --setup             re-run the guided repo setup (runs automatically on first use)
     -h, --help          show this help
 
 REPO CONFIG (unioned): --repos · --root · ./.commit-chronicle ·

@@ -63,6 +63,30 @@ Maintainers can produce all platform binaries with `make release` (output in
 
 ---
 
+## Quick start
+
+```bash
+commit-chronicle
+```
+
+On the **first run** with no repos configured, it walks you through a one-time
+setup: it scans the usual places (`~/projects`, `~/work`, `~/code`, the current
+folder, …), shows how many git repos each holds, lets you pick one, and offers
+to remember it. It also checks whether `gh` is authenticated so PRs and reviews
+can be included.
+
+After that, just run `commit-chronicle` from anywhere:
+
+```bash
+commit-chronicle                       # pick range → pick items → edit → export
+commit-chronicle --since "7 days ago"
+commit-chronicle --date today --copy   # also: yesterday, "3 days ago", etc.
+```
+
+> Re-run setup any time with `commit-chronicle --setup`.
+
+---
+
 ## Usage
 
 Run it inside a git repo, or configure repos/roots (below) to scan many at once:
@@ -104,7 +128,7 @@ In the editor: `ctrl+s` save · `esc` cancel.
 --all               select everything (skip the picker)
 --no-edit           skip the editor step
 --no-pr             skip GitHub PR + review discovery (git commits only)
---copy              copy the worklog to the clipboard
+--copy              copy the whole worklog to the clipboard (skips the picker)
 -h, --help          show help
 ```
 
@@ -135,12 +159,41 @@ file format.
 
 ---
 
+## Pull requests & reviews
+
+PRs and reviews are **included by default** — there's no flag to turn them on.
+All you need is the GitHub CLI, authenticated once:
+
+```bash
+gh auth login        # one-time
+gh auth status       # verify
+```
+
+With that in place, every run gathers, alongside your commits:
+
+- pull requests **you authored** (tag `PR`)
+- pull requests **you reviewed** (tag `review`, dated by your review)
+- commits on your PRs that the plain author match might miss
+
+**Fork workflows just work.** If you push to your own `origin` fork but open
+PRs and submit reviews against an `upstream` parent, discovery queries *every*
+remote — so your reviews on the upstream repo are found automatically.
+
+Pass `--no-pr` if you ever want commits only. No `gh` installed (or not
+authenticated) also falls back to git-only, with a one-line note telling you how
+to enable PRs/reviews.
+
+---
+
 ## How it works
 
 - **Commits** come from `git log --all --author=<you>` across every ref.
 - **PRs / reviews** come from `gh` (the GitHub CLI). It lists your PRs in the
   window, then fetches commit/review details per-PR — GitHub searches are
   date-bounded so it only inspects PRs that could fall in range.
+- **Fork-aware:** discovery follows *every* remote of a repo, not just
+  `origin`. In a fork workflow you push to your `origin` fork but open PRs and
+  submit reviews against the `upstream` parent, so both are queried.
 - Everything is keyed by hash (commits) or repo+number (PRs) and de-duplicated,
   so a commit that shows up both in history and on a PR appears once.
 - Output is grouped by date; commits, PRs and reviews each render as distinct,
@@ -155,6 +208,13 @@ No `gh`, or pass `--no-pr`, and it runs git-only.
 - **git** (required)
 - **gh**, authenticated (`gh auth login`) — optional, for PR & review discovery
 - a clipboard tool for `--copy`: `pbcopy` (macOS), `wl-copy` or `xclip` (Linux)
+
+## Security
+
+All `git`/`gh` calls use an explicit argument vector (no shell), `gh` handles
+GitHub auth (no tokens touched here), and commit/PR text is stripped of terminal
+escape sequences before display. CI runs `govulncheck` on every push. See
+[SECURITY.md](SECURITY.md) for details and how to report issues.
 
 ## License
 

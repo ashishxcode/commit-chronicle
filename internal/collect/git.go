@@ -4,22 +4,46 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ashishxcode/commit-chronicle/internal/model"
 )
 
 const fieldSep = "\x1f" // ASCII unit separator
 
-// anchorMidnight pins a bare YYYY-MM-DD to local midnight. git's --since/--until
-// parse a bare date via approxidate, which fills the missing time with the
-// *current* time of day — skewing every window by the wall clock. Relative
-// strings (e.g. "7 days ago") are passed through untouched.
-func anchorMidnight(when string) string {
-	if _, err := time.Parse("2006-01-02", when); err == nil {
-		return when + " 00:00:00"
+// isNoiseSubject reports whether a commit subject is mechanical noise that
+// shouldn't appear in a worklog: merge commits and git-stash entries. (Plain
+// git history is already filtered with --no-merges; this also covers commits
+// pulled in from PRs, and stash refs that slip in via `git log --all`.)
+func isNoiseSubject(s string) bool {
+	s = strings.TrimSpace(s)
+	for _, p := range []string{
+		"Merge branch ", "Merge remote-tracking ", "Merge pull request ",
+		"index on ", "WIP on ",
+	} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
 	}
-	return when
+	return false
+}
+
+// anchorMidnight pins a date or relative day-phrase to local midnight. git's
+// --since/--until parse their argument via approxidate, which fills a missing
+// time-of-day with the *current* wall-clock time — so a bare YYYY-MM-DD,
+// "today", "yesterday", or "7 days ago" all silently skew the window by the
+// time of day (e.g. "--since today" excludes everything committed earlier
+// today). Appending an explicit 00:00:00 anchors to the start of the day,
+// matching the --date=short granularity we report. Strings that already carry
+// a time component (a ":" or the "midnight"/"noon" keywords) are left as-is.
+func anchorMidnight(when string) string {
+	if when == "" {
+		return when
+	}
+	w := strings.ToLower(when)
+	if strings.Contains(w, ":") || strings.Contains(w, "midnight") || strings.Contains(w, "noon") {
+		return when
+	}
+	return when + " 00:00:00"
 }
 
 // gitCommits returns de-duplicated commits authored by `author` in the range,
@@ -55,6 +79,9 @@ func gitCommits(repos []string, author string, r model.Range) []model.Item {
 			if len(p) != 4 {
 				continue
 			}
+			if isNoiseSubject(p[3]) {
+				continue
+			}
 			url := ""
 			if base != "" {
 				url = base + "/commit/" + p[1]
@@ -67,7 +94,7 @@ func gitCommits(repos []string, author string, r model.Range) []model.Item {
 				URL:       url,
 				Hash:      p[1],
 				ShortHash: p[0],
-				Title:     p[3],
+				Title:     model.CleanText(p[3]),
 			})
 		}
 	}
