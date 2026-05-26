@@ -25,6 +25,11 @@ For a window you choose, it gathers **everything you did**:
 
 ## Install
 
+> **macOS users:** prefer Option 1 or 2 — building locally is never blocked by
+> Gatekeeper. The pre-built release binaries (Option 3) are not Apple-notarized,
+> so macOS will quarantine a downloaded copy and warn it "cannot be opened" /
+> "is malware"; clearing that takes one command (shown below).
+
 ### Option 1 — `go install` (needs Go 1.25+)
 
 ```bash
@@ -54,9 +59,17 @@ Grab the binary for your OS/arch from the
 [Releases](https://github.com/ashishxcode/commit-chronicle/releases) page, then:
 
 ```bash
-chmod +x commit-chronicle-*        # macOS/Linux
+chmod +x commit-chronicle-*                          # macOS/Linux
+xattr -d com.apple.quarantine commit-chronicle-* 2>/dev/null || true  # macOS only
 mv commit-chronicle-* /usr/local/bin/commit-chronicle
 ```
+
+The `xattr` line clears the Gatekeeper quarantine flag macOS adds to anything
+downloaded from the internet — without it you'll get a "cannot be opened
+because Apple cannot check it for malicious software" / malware warning, because
+the binaries aren't notarized. (You can also right-click the binary in Finder →
+**Open** the first time.) If you'd rather avoid this entirely, install with
+`go install` (Option 1), which compiles on your machine and is never quarantined.
 
 Maintainers can produce all platform binaries with `make release` (output in
 `dist/`).

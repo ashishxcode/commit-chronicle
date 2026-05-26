@@ -30,3 +30,22 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          body: |
+            ## Install
+
+            **Recommended (no warnings):**
+            ```bash
+            go install github.com/ashishxcode/commit-chronicle/cmd/commit-chronicle@latest
+            ```
+
+            **Pre-built binary:** download for your OS/arch below, then:
+            ```bash
+            chmod +x commit-chronicle-*
+            # macOS only — clear the Gatekeeper quarantine flag:
+            xattr -d com.apple.quarantine commit-chronicle-* 2>/dev/null || true
+            mv commit-chronicle-* /usr/local/bin/commit-chronicle
+            ```
+
+            > macOS can't verify these binaries (they aren't Apple-notarized), so a
+            > downloaded copy is quarantined and reported as "malware" / "cannot be
+            > opened" until you run the `xattr` command above (or right-click → Open).
