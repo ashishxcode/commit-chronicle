@@ -16,6 +16,22 @@ type Meta struct {
 	RangeLabel string
 }
 
+// reviewVerdict maps a review state to a display icon and label.
+func reviewVerdict(state string) (icon, label string) {
+	switch state {
+	case "APPROVED":
+		return "✅", "approved"
+	case "CHANGES_REQUESTED":
+		return "🔴", "changes requested"
+	case "COMMENTED":
+		return "💬", "commented"
+	case "DISMISSED":
+		return "⊘", "dismissed"
+	default:
+		return "•", "reviewed"
+	}
+}
+
 func stateIcon(state string) string {
 	switch state {
 	case "MERGED":
@@ -29,26 +45,41 @@ func stateIcon(state string) string {
 	}
 }
 
-// Markdown renders items grouped by date. Commits, PRs and reviews each get a
-// distinct, link-bearing line so nothing is ambiguous.
+// Markdown renders items grouped by date, then by kind within each day, so a
+// reader sees a clean "commits / pull requests / reviews" breakdown per day.
 func Markdown(items []model.Item, m Meta) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# 📓 Worklog — %s\n\n", m.RangeLabel)
-	fmt.Fprintf(&b, "> **Author:** %s  \n", m.Author)
-	fmt.Fprintf(&b, "> **Generated:** %s  \n", time.Now().Format("2006-01-02 15:04"))
-	fmt.Fprintf(&b, "> **Entries:** %d  (%s)\n\n", len(items), counts(items))
-	b.WriteString("<!-- Edit freely. Each '- ' line is a worklog entry. -->\n")
+	fmt.Fprintf(&b, "**%s** · generated %s  \n", m.Author, time.Now().Format("2006-01-02 15:04"))
+	fmt.Fprintf(&b, "%s\n", counts(items))
 
-	cur := ""
+	// Walk the (already date-sorted, then kind-sorted) items, opening a new day
+	// section on date change and a kind subsection on kind change within a day.
+	curDate, curKind := "", model.Kind(-1)
 	for _, it := range items {
-		if it.Date != cur {
-			cur = it.Date
-			fmt.Fprintf(&b, "\n## %s\n\n", it.Date)
+		if it.Date != curDate {
+			curDate, curKind = it.Date, model.Kind(-1)
+			fmt.Fprintf(&b, "\n## %s\n", it.Date)
+		}
+		if it.Kind != curKind {
+			curKind = it.Kind
+			fmt.Fprintf(&b, "\n### %s\n\n", kindHeading(it.Kind))
 		}
 		b.WriteString(line(it))
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+func kindHeading(k model.Kind) string {
+	switch k {
+	case model.KindPR:
+		return "Pull requests"
+	case model.KindReview:
+		return "Reviews"
+	default:
+		return "Commits"
+	}
 }
 
 func line(it model.Item) string {
@@ -60,11 +91,12 @@ func line(it model.Item) string {
 	}
 	switch it.Kind {
 	case model.KindPR:
-		return fmt.Sprintf("- **PR %s** %s %s  _(%s)_ — %s\n",
-			link(it.Ref()), stateIcon(it.State), it.Title, it.State, it.RepoName)
+		return fmt.Sprintf("- %s **%s** %s — %s · %s\n",
+			stateIcon(it.State), link(it.Ref()), it.Title, strings.ToLower(it.State), it.RepoName)
 	case model.KindReview:
-		return fmt.Sprintf("- **Reviewed PR %s** %s %s  _(%s)_ — %s\n",
-			link(it.Ref()), stateIcon(it.State), it.Title, it.State, it.RepoName)
+		icon, verdict := reviewVerdict(it.ReviewState)
+		return fmt.Sprintf("- %s **%s** %s — %s (PR %s) · %s\n",
+			icon, link(it.Ref()), it.Title, verdict, strings.ToLower(it.State), it.RepoName)
 	default: // commit
 		return fmt.Sprintf("- %s  _(%s)_\n", it.Title,
 			link(it.RepoName+"@"+it.ShortHash))
@@ -83,18 +115,19 @@ func counts(items []model.Item) string {
 			r++
 		}
 	}
-	return fmt.Sprintf("%d commits, %d PRs, %d reviews", c, p, r)
+	return fmt.Sprintf("%d commits · %d PRs · %d reviews · %d total", c, p, r, len(items))
 }
 
 type jsonItem struct {
-	Kind   string `json:"kind"`
-	Date   string `json:"date"`
-	Repo   string `json:"repo"`
-	Title  string `json:"title"`
-	URL    string `json:"url"`
-	Hash   string `json:"hash,omitempty"`
-	Number int    `json:"number,omitempty"`
-	State  string `json:"state,omitempty"`
+	Kind        string `json:"kind"`
+	Date        string `json:"date"`
+	Repo        string `json:"repo"`
+	Title       string `json:"title"`
+	URL         string `json:"url"`
+	Hash        string `json:"hash,omitempty"`
+	Number      int    `json:"number,omitempty"`
+	State       string `json:"state,omitempty"`
+	ReviewState string `json:"reviewState,omitempty"`
 }
 
 // JSON renders items as a JSON array.
@@ -104,7 +137,7 @@ func JSON(items []model.Item, _ Meta) string {
 		out = append(out, jsonItem{
 			Kind: it.Tag(), Date: it.Date, Repo: it.RepoName,
 			Title: it.Title, URL: it.URL, Hash: it.Hash,
-			Number: it.Number, State: it.State,
+			Number: it.Number, State: it.State, ReviewState: it.ReviewState,
 		})
 	}
 	data, err := json.MarshalIndent(out, "", "  ")

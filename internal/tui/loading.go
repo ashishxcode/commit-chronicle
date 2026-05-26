@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ashishxcode/commit-chronicle/internal/model"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -23,13 +24,15 @@ type doneMsg struct {
 }
 
 type loadingModel struct {
-	sp     spinner.Model
-	label  string
-	stages []string
-	total  int
-	done   bool
-	items  []model.Item
-	err    error
+	sp       spinner.Model
+	label    string
+	done     []string // completed phases, e.g. "git history: 87"
+	active   string   // phase currently running, e.g. "PRs you reviewed"
+	total    int
+	start    time.Time
+	finished bool
+	items    []model.Item
+	err      error
 }
 
 // RunWithSpinner shows an animated spinner with live progress while work runs
@@ -39,7 +42,7 @@ func RunWithSpinner(label string, work WorkFn) ([]model.Item, error) {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(cBlue)
 
-	m := loadingModel{sp: sp, label: label}
+	m := loadingModel{sp: sp, label: label, start: time.Now()}
 	p := tea.NewProgram(m)
 
 	go func() {
@@ -62,13 +65,18 @@ func (m loadingModel) Init() tea.Cmd { return m.sp.Tick }
 func (m loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case statusMsg:
-		if msg.n > 0 {
-			m.stages = append(m.stages, fmt.Sprintf("%s: %d", msg.stage, msg.n))
+		if msg.n == 0 {
+			m.active = msg.stage // phase started
+		} else {
+			m.done = append(m.done, fmt.Sprintf("%s: %d", msg.stage, msg.n))
 			m.total += msg.n
+			if m.active == msg.stage {
+				m.active = ""
+			}
 		}
 		return m, nil
 	case doneMsg:
-		m.done = true
+		m.finished = true
 		m.items = msg.items
 		m.err = msg.err
 		return m, tea.Quit
@@ -84,12 +92,21 @@ func (m loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m loadingModel) View() string {
-	if m.done {
+	if m.finished {
 		return "" // cleared once the picker takes over
 	}
-	head := m.sp.View() + titleSty.Render(m.label)
-	if len(m.stages) == 0 {
-		return head + dimSty.Render("  …")
+	elapsed := time.Since(m.start).Truncate(time.Second)
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s  %s\n", m.sp.View(), titleSty.Render(m.label),
+		dimSty.Render(fmt.Sprintf("%s · %d found", elapsed, m.total)))
+
+	// Completed phases as a check-list.
+	for _, d := range m.done {
+		b.WriteString(selSty.Render("  ✓ ") + dimSty.Render(d) + "\n")
 	}
-	return head + "\n" + dimSty.Render("  "+strings.Join(m.stages, " · "))
+	// The phase currently running.
+	if m.active != "" {
+		b.WriteString(curSty.Render("  → scanning "+m.active) + dimSty.Render(" …"))
+	}
+	return b.String()
 }
